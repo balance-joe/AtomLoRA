@@ -1,0 +1,38 @@
+# configs/templates/bert_lora_template.yaml
+exp_id: "bert_lora_template"
+description: "BERT-LoRA分类基础模板"
+base_config: null
+task_type: "single_cls"
+
+model:
+  arch: "bert-base-chinese"
+  path: "./model/bert-base-chinese"
+  dropout: 0.15
+  freeze_bert: False # 默认为 False
+  lora:
+    enabled: True
+    rank: 8
+    alpha: 16
+    dropout: 0.05
+    target_modules: ["query", "key", "value"]
+    bias: "none"
+
+data:
+  train_path: "./data/raw/train_default.jsonl" # 统一命名
+  data_format: "jsonl"
+  max_len: 256
+  data_process_version: "v1.0_default"
+  label_col: "label"
+
+train:
+  num_epochs: 14
+  batch_size: 20
+  lora_lr: 1.5e-4       # 统一命名
+  classifier_lr: 5e-4
+  gradient_accumulation_steps: 3
+  warmup_ratio: 0.1
+  save_strategy: "best_f1"
+
+resources:
+  priority: "medium"
+  gpus: "auto"
