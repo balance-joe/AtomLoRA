@@ -5,7 +5,7 @@
 exp_id: "text_audit_multitask_final"
 description: "文本审计双任务：误报识别(2分类) + 风险分级(5分类)。使用 LoRA 微调和错词标记。"
 base_config: "templates/bert_lora_template.yaml" # 继承基础模板
-task_type: "double_cls" # 核心：声明为双标签任务
+task_type: "multi_cls"  # 任务类型 单任务single_cls 多任务：multi_cls
 
 # --- 2. 数据配置 ---
 data:
@@ -17,7 +17,6 @@ data:
   
   text_col: "text"  # 文本字段名（如"text"）
 
-  task_type: "multi_cls" # 任务类型 单任务single_cls 多任务：multi_cls
   
   # 双任务标签列名
   label_col: 

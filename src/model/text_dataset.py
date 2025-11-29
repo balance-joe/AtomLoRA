@@ -29,7 +29,6 @@ def collate_fn(batch):
             # 获取该任务的所有标签列表
             raw_labels = [item['labels'][task_key] for item in batch]
             
-            # =============== 核心修复与调试 ==================
             try:
                 # 尝试强制转为 int 列表，防止 list 中包含 str
                 int_labels = [int(l) for l in raw_labels]
@@ -38,7 +37,6 @@ def collate_fn(batch):
                 print(f"❌ 数据类型错误！任务 '{task_key}' 的标签包含非数字字符。")
                 print(f"前5个样本的原始标签: {raw_labels[:5]}")
                 raise e
-            # ===============================================
             
     else:
         # 单任务逻辑
