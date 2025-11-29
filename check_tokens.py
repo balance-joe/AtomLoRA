@@ -106,7 +106,7 @@ def main(config_path: str):
 if __name__ == "__main__":
 
     # 启动实验
-    main(r"D:\python\AtomLoRA\configs\text_audit.yaml")
+    main(r"D:\python\AtomLoRA\configs\text_audit_one.yaml")
     
     # 新数据格式
     # {"text":"他无法分[ERROR]辨[\/ERROR]是非，总是说错话 [SEP] 辨 -> 辩 [SEP] 错别字","label_is_misreport":0,"label_risk_level":1}

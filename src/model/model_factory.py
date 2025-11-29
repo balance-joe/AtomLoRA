@@ -97,8 +97,14 @@ class MultiTaskTextClassifier(nn.Module):
         
         # 关键修改：从label_col获取任务名称
         if self.task_type == "single_cls":
-            # 单任务：使用默认映射 这里有问题，没适配这个
-            mappings = {"default": self.config["data"]["label_map"]} #
+            # 1. 获取label_mapping配置（是字典，如{'misreport': {0:..., 1:...}}）
+            label_mapping_config = self.config["data"]["label_mapping"]
+            # 2. 动态取第一个任务的键（不管是misreport还是其他）
+            first_task_key = next(iter(label_mapping_config.keys()))  # 拿到'misreport'
+            # 3. 取第一个任务的标签映射（{0: '非误报', 1: '误报'}）
+            first_task_label_map = label_mapping_config[first_task_key]
+            # 4. 构建mappings（default对应正确的标签映射）
+            mappings = {"default": first_task_label_map}
         else:
             # 多任务：从label_col的键获取任务名称
             label_col_config = self.config["data"]["label_col"]
@@ -161,18 +167,24 @@ class MultiTaskTextClassifier(nn.Module):
             if task_name not in self.classifiers: 
                 continue
             
+            # 计算当前任务的logits
             logits = self.classifiers[task_name](pooled_output)
-            logits_dict[task_name] = logits
+            logits_dict[task_name] = logits            
             
             if labels is not None:
                 if self.task_type == "single_cls":
-                    task_label = labels
+                    # 关键修复：处理单任务下labels是字典的情况
+                    if isinstance(labels, dict):
+                        # 取字典中第一个任务的标签（或指定"misreport"）
+                        task_label = next(iter(labels.values()))  # 通用取第一个
+                    else:
+                        task_label = labels
                     loss = self.loss_fct(logits, task_label)
                     total_loss += loss * loss_weights[i]
                 else:
+                    # 多任务逻辑不变
                     if isinstance(labels, dict) and task_name in labels:
                         task_label = labels[task_name]
-                        
                         loss = self.loss_fct(logits, task_label)
                         total_loss += loss * loss_weights[i]
         

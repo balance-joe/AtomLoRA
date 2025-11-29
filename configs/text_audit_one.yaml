@@ -1,0 +1,88 @@
+# configs/text_audit.yaml
+# 对应 text_audit 模型的最终业务配置：双任务 + LoRA + 错词标记识别
+
+# --- 1. 实验基本定义 ---
+exp_id: "text_one_audit_multitask_final"
+description: "文本审计双任务：误报识别(2分类) + 风险分级(5分类)。使用 LoRA 微调和错词标记。"
+base_config: "templates/bert_lora_template.yaml" # 继承基础模板
+task_type: "single_cls"  # 任务类型 单任务single_cls 多任务：multi_cls
+
+# --- 2. 数据配置 ---
+data:
+  # 假设路径为以下，可根据实际情况修改
+  train_path: "./data/raw/text_audit_one_data/train.jsonl"
+  dev_path: "./data/raw/text_audit_one_data/dev.jsonl" 
+  test_path: "./data/raw/text_audit_one_data/test.jsonl" 
+  max_len: 256 # 对应 Config.pad_size
+  
+  # 文本字段名（如"text"）
+  text_col: "text"  
+  
+  # 双任务标签列名
+  label_col: 
+    misreport: "is_misreport_label"
+    
+  # 标签子集 (用于自动生成 label_mapping)
+  label_subset: 
+    misreport: [0, 1]                # 标签
+
+  # 标签文本
+  label_mapping:
+    misreport: {0 : "非误报", 1 : "误报"}
+
+# --- 3. Tokenizer配置 (解决错词标记) ---
+tokenizer:
+  # 开启错词标记特殊处理 (对应 Config._init_tokenizer 添加特殊token)
+  add_special_tokens: True 
+  special_tokens: 
+    - "[ERROR]"
+    - "[/ERROR]"
+    - "NOSUGGEST"
+    
+# --- 4. 模型架构配置 ---
+model:
+  dropout: 0.15 # 核心调整：对应 Config.dropout (0.1 -> 0.15)
+  freeze_bert: True # 核心调整：对应 Config.bert_freeze = True
+  arch: "bert-base-chinese"  # 模型架构名（或本地路径）
+  path: "./models/bert-base-chinese"  # 本地模型路径（可选，优先加载本地）
+  # LoRA 配置 (对应 Config.LORA_*)
+  lora:
+    rank: 8          # Config.LORA_RANK
+    alpha: 16        # Config.LORA_ALPHA
+    dropout: 0.05    # Config.LORA_DROPOUT
+    # 保持与 Python 代码一致，如果系统能自动识别，则可简化为 ["query", "key", "value"]
+    target_modules: ["self.query", "self.key", "self.value"] 
+    bias: "none"     # Config.LORA_BIAS
+
+# --- 5. 训练超参数配置 ---
+train:
+  num_epochs: 14   # 核心调整：对应 Config.num_epochs
+  batch_size: 20   # 对应 Config.batch_size
+  gradient_accumulation_steps: 3 # 对应 Config.gradient_accumulation_steps
+  warmup_ratio: 0.1 # 对应 Config.warmup_ratio
+  
+  # 早停策略 (对应 Config.require_improvement)
+  early_stopping:
+    patience: 3
+    metric: "avg_f1" # 双任务通常监控平均 F1
+    
+  # 损失权重 (对应 Config.loss_weight_*)
+  # [误报识别(1.0), 风险分级(1.2)]
+  loss_weight: [1.0, 1.2] 
+
+  # 优化器分组学习率 (对应 Config.*_lr)
+  optimizer:
+    type: "AdamW"
+    # 分组学习率，覆盖模板的 learning_rate
+    groups:
+      bert: 2e-6        # 对应 Config.bert_lr (兼容性保留)
+      lora: 1.5e-4      # 对应 Config.lora_lr (LoRA专属高LR)
+      classifier: 5e-4  # 对应 Config.classifier_lr (分类头LR)
+  
+  # 调度器配置
+  scheduler_type: "cosine" # 对应 Config.scheduler_type
+  
+# --- 6. 资源调度配置 ---
+resources:
+  priority: "high"
+  gpus: "auto"

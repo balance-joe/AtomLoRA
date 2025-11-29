@@ -57,5 +57,5 @@ def main(config_path):
 if __name__ == "__main__":
     # 可以用 argparse，这里为了简便直接调用
     # 请确保 yaml 文件路径正确
-    main(r"D:\python\AtomLoRA\configs\text_audit.yaml")
+    main(r"D:\python\AtomLoRA\configs\text_audit_one.yaml")
     

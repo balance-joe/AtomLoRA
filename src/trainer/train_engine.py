@@ -162,6 +162,12 @@ class Trainer:
         # 关键修改：从label_col获取任务名称
         if self.config["task_type"] == "single_cls":
             task_names = ["default"]
+            # 获取单任务的标签键（比如'misreport'）
+            label_col_config = self.config["data"]["label_col"]
+            if isinstance(label_col_config, dict):
+                single_task_key = next(iter(label_col_config.keys()))  # 拿到'misreport'
+            else:
+                single_task_key = label_col_config
         else:
             label_col_config = self.config["data"]["label_col"]
             if isinstance(label_col_config, dict):
@@ -184,19 +190,24 @@ class Trainer:
                 for t in task_names:
                     if self.config["task_type"] == "single_cls":
                         logit = outputs.get("default", outputs) if isinstance(outputs, dict) else outputs
-                        label = labels
+                        # 关键修复：处理字典格式的labels
+                        if isinstance(labels, dict):
+                            label = labels[single_task_key]  # 提取张量（如labels['misreport']）
+                        else:
+                            label = labels
                     else:
                         logit = outputs[t]
                         label = labels[t]
                         
                     all_logits[t].append(logit.cpu())
-                    all_labels[t].append(label.cpu())
+                    all_labels[t].append(label.cpu())  # 现在label是张量，可调用cpu()
 
         for t in task_names:
             all_logits[t] = torch.cat(all_logits[t], dim=0)
             all_labels[t] = torch.cat(all_labels[t], dim=0)
 
         return self.metric_manager.compute(all_logits, all_labels)
+
     
     def save_model(self):
         """
