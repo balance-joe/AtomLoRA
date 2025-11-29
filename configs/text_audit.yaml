@@ -15,7 +15,9 @@ data:
   test_path: "./data/raw/text_audit_data/test.jsonl" 
   max_len: 256 # 对应 Config.pad_size
   
-  text_col: "error_content"  # 文本字段名（如"text"）
+  text_col: "text"  # 文本字段名（如"text"）
+
+  task_type: "multi_cls" # 任务类型 单任务single_cls 多任务：multi_cls
   
   # 双任务标签列名
   label_col: 
@@ -25,12 +27,12 @@ data:
   # 标签子集 (用于自动生成 label_mapping)
   label_subset: 
     misreport: [0, 1]                # 标签
-    risk: [1, 2, 3, 4, 5]            # 标签2
+    risk: [0, 1, 2, 3, 4]            # 标签2
 
   # 标签文本
   label_mapping:
     misreport: {0 : "非误报", 1 : "误报"}
-    risk: {1 : "一级", 2 : "二级", 3 : "三级", 4 : "四级", 5 : "五级"}
+    risk: {0 : "一级", 1 : "二级", 2 : "三级", 3 : "四级", 4 : "五级"}
 
 # --- 3. Tokenizer配置 (解决错词标记) ---
 tokenizer:

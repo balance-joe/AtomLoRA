@@ -126,7 +126,6 @@ class ConfigParser:
         
         if task_type == "single_cls":
             # 单任务：List[str] -> Dict
-            # 假设 subset 就是标签列表
             mapping = {label: idx for idx, label in enumerate(subset)}
             data["label_mapping"] = mapping
             

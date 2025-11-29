@@ -26,6 +26,11 @@ def load_dataset(config, path, tokenizer):
     label_col_map = data_config["label_col"]  # 任务-标签字段映射（如{"misreport": "mis_label", "risk": "risk_label"}）
     label_mapping = data_config["label_mapping"]  # 标签-ID映射（如{"misreport": {"非误报":0, "误报":1}}）
     
+    reversed_label_mapping = {}
+    for task_name, mapping in label_mapping.items():
+        # 反转映射：将 {0: "非误报"} 变为 {"非误报": 0}
+        reversed_label_mapping[task_name] = {v: int(k) for k, v in mapping.items()}
+        
     logger.info(f"加载数据集：{path} | 文本字段：{text_col} | 任务标签字段：{list(label_col_map.keys())}")
     
     with open(path, "r", encoding="UTF-8") as f:
@@ -63,20 +68,50 @@ def load_dataset(config, path, tokenizer):
             valid_label = True
             for task_name, field_name in label_col_map.items():
                 raw_label = data.get(field_name)
-                if raw_label is None:
+                
+                # 特殊处理：如果原始数据是 int (例如0/1)，但 mapping 的 key 是 str，需转为 str 查找
+                # 如果原始数据是 str，直接查找
+                lookup_key = str(raw_label) if raw_label is not None else None
+
+                if lookup_key is None:
                     logger.warning(f"第{line_idx+1}行任务[{task_name}]标签字段[{field_name}]缺失，跳过样本")
                     valid_label = False
                     break
 
-                # 标签转ID（兼容字符串/数字标签）
                 try:
-                    label_id = label_mapping[task_name][raw_label]  # 统一转字符串匹配
+                    # # 优先尝试直接匹配
+                    # if raw_label in label_mapping[task_name]:
+                    #     label_id = label_mapping[task_name][raw_label]
+                        
+                    #     print('--------------------')
+                    #     print("task_name"+ task_name)
+                    #     print("raw_label"+ raw_label)
+                    #     print('--------------------')
+                    # # 其次尝试转字符串匹配 (兼容 json 读取 0 为 int，但 mapping key 为 "0" 的情况)
+                    # elif lookup_key in label_mapping[task_name]:
+                    #     print(222222)
+                    #     print(task_name)
+                    #     print(raw_label)
+                    #     print(111111)
+                    #     label_id = label_mapping[task_name][lookup_key]
+                    # else:
+                    #     raise KeyError
+                    
+                    # # =============== 核心修复 ==================
+                    # # 强制转换为整数！防止 YAML 配置写成 "1" 导致报错
+                    # print(label_id)
+                    # print(label_id)
+                    # print(label_id)
+                    label_id = raw_label
+                    labels[task_name] = int(label_id) 
+                    # ==========================================
+                    
                 except KeyError:
-                    logger.warning(f"第{line_idx+1}行任务[{task_name}]标签[{raw_label}]不在映射中，跳过样本")
+                    # 仅在DEBUG模式下打印详细错误，防止刷屏
+                    # logger.debug(f"第{line_idx+1}行任务[{task_name}]标签[{raw_label}]不在映射中")
                     valid_label = False
                     break
-                labels[task_name] = label_id
-
+            
             if not valid_label:
                 invalid_lines += 1
                 continue

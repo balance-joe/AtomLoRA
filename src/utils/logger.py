@@ -95,7 +95,3 @@ def get_logger(experiment_id: Optional[str] = None) -> logging.Logger:
             return logger
     # 返回默认Logger（未绑定实验ID）
     return init_logger()
-
-
-# 便捷函数：快速创建默认Logger（无实验ID）
-default_logger = get_logger()
