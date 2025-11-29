@@ -39,7 +39,7 @@ def init_logger(
     
     Args:
         experiment_id: 实验ID（用于日志文件目录区分）
-        task_type: 任务类型（single_cls/double_cls/unknown）
+        task_type: 任务类型（single_cls/multi_cls/unknown）
         log_level: 日志级别（logging.INFO/logging.DEBUG等）
     
     Returns:
@@ -83,7 +83,7 @@ def init_logger(
     # 禁止向上传播（避免重复输出）
     logger.propagate = False
     
-    logger.info(f"Logger initialized for experiment: {exp_id} (task_type: {task_type})")
+    logger.info(f"日志初始化完毕: {exp_id} (task_type: {task_type})")
     return logger
 
 

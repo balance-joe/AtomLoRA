@@ -16,17 +16,15 @@ def main(config_path):
     # 1. Config
     config = parse_config(config_path)
     exp_id = config["exp_id"]
-    print(exp_id)
     logger = init_logger(exp_id, config["task_type"])
     
-    return
-    logger.info(f"Loaded config from {config_path}")
+    logger.info(f"加载配置，文件是 {config_path}")
     
     # 2. Tokenizer (包含特殊token添加)
     tokenizer = load_tokenizer(config)
     
     # 3. Data
-    logger.info("Loading Datasets...")
+    logger.info("加载数据集...")
     # 注意：data_processor 返回的是 List[Dict]
     train_data = load_dataset(config, config["data"]["train_path"], tokenizer)
     dev_data = load_dataset(config, config["data"]["dev_path"], tokenizer)
@@ -37,12 +35,12 @@ def main(config_path):
     dev_loader = create_dataloader(dev_data, batch_size, shuffle=False)
     
     # 4. Model
-    logger.info("Building Model...")
+    logger.info("构建模型...")
     # 传入 tokenizer 以便 resize embedding
     model = MultiTaskTextClassifier(config, tokenizer)
     
     # 5. Trainer
-    logger.info("Initializing Trainer...")
+    logger.info("初始化训练类...")
     trainer = Trainer(
         config=config,
         model=model,
@@ -54,7 +52,7 @@ def main(config_path):
     # 6. Run
     trainer.train()
     
-    logger.info("Experiment Finished.")
+    logger.info("操作完成")
 
 if __name__ == "__main__":
     # 可以用 argparse，这里为了简便直接调用

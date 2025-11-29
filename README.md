@@ -142,7 +142,7 @@ json
   },
   "exp_v4_double_label": {
     "create_time": "2024-05-22 10:15:00",
-    "task_type": "double_cls",
+    "task_type": "multi_cls",
     "base_config": "templates/bert_lora_template.yaml",
     "key_params": {
       "model": "bert-base-chinese",
@@ -395,7 +395,7 @@ python main.py run --config configs/exp_v4_double_label.yaml
 python main.py run-parallel --configs configs/exp_v1*.yaml,configs/exp_v4*.yaml --gpu-pool 0,1
 
 # 筛选双标签实验并按平均F1排序
-python main.py compare --filter "task_type=double_cls" --sort-by "avg_f1"
+python main.py compare --filter "task_type=multi_cls" --sort-by "avg_f1"
 
 # 回滚到最优双标签版本
 python main.py rollback --exp-id exp_v4_double_label

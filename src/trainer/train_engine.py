@@ -69,7 +69,7 @@ class Trainer:
                 "weight_decay": 0.001
             })
             
-        self.logger.info(f"Optimizer groups: LoRA({len(lora_params)}), Clf({len(classifier_params)}), Bert({len(bert_params)})")
+        self.logger.info(f"优化器组: LoRA({len(lora_params)}), Clf({len(classifier_params)}), Bert({len(bert_params)})")
         return torch.optim.AdamW(optimizer_grouped_parameters)
 
     def _build_scheduler(self):
@@ -90,7 +90,7 @@ class Trainer:
         best_score = float('-inf')
         global_step = 0
         
-        self.logger.info("Start Training...")
+        self.logger.info("开始训练...")
         
         for epoch in range(1, epochs + 1):
             self.model.train()
@@ -152,7 +152,7 @@ class Trainer:
             if current_score > best_score:
                 best_score = current_score
                 self.save_model()
-                self.logger.info(f">>> New Best Model Saved! Score: {best_score:.4f}")
+                self.logger.info(f">>> 新模型诞生! 分数: {best_score:.4f}")
 
     def evaluate(self):
         self.model.eval()

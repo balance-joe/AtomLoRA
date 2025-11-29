@@ -20,7 +20,7 @@ REQUIRED_FIELDS = {
 TASK_REQUIRED_FIELDS = {
     # 移除 label_mapping 的强校验，改为校验 label_subset 或 label_mapping 存在其一即可
     "single_cls": [], 
-    "double_cls": ["train.loss_weight"]
+    "multi_cls": ["train.multi_cls"]
 }
 
 class ConfigParser:
@@ -49,7 +49,7 @@ class ConfigParser:
         # 5. 适配结构
         self._adapt_task_type()
         
-        logger.info(f"Config parsed successfully: {self.final_config.get('exp_id')}")
+        logger.info(f"配置集成完毕: {self.final_config.get('exp_id')}")
         return self.final_config
 
     def _resolve_abs_path(self, config_path: str) -> str:
@@ -129,14 +129,14 @@ class ConfigParser:
             mapping = {label: idx for idx, label in enumerate(subset)}
             data["label_mapping"] = mapping
             
-        elif task_type == "double_cls":
+        elif task_type == "multi_cls":
             # 双任务：Dict[str, List[str]] -> Dict[str, Dict]
             mappings = {}
             for task_name, labels in subset.items():
                 mappings[task_name] = {label: idx for idx, label in enumerate(labels)}
             data["label_mapping"] = mappings
         
-        logger.info(f"Auto-generated label_mapping from label_subset for {task_type}")
+        logger.info(f"从标签子集自动生成的标签映射 {task_type}")
 
     def _validate_config(self):
         # 1. 基础字段
@@ -152,7 +152,7 @@ class ConfigParser:
             raise ValueError("Missing data.label_subset or data.label_mapping")
 
         # 4. 双任务检查
-        if self.final_config["task_type"] == "double_cls":
+        if self.final_config["task_type"] == "multi_cls":
             if "loss_weight" not in self.final_config.get("train", {}):
                 raise ValueError("Double task requires train.loss_weight")
 
@@ -164,10 +164,10 @@ class ConfigParser:
         if task_type == "single_cls":
             self.final_config["data"]["label_key"] = data_config.get("label_col", "label")
             self.final_config["data"]["label_map"] = data_config["label_mapping"]
-        elif task_type == "double_cls":
+        elif task_type == "multi_cls":
             # 确保 label_col 是字典
             if not isinstance(data_config.get("label_col"), dict):
-                 raise ValueError("For double_cls, data.label_col must be a dict mapping task_name -> col_name")
+                 raise ValueError("For multi_cls, data.label_col must be a dict mapping task_name -> col_name")
             
             task_names = list(data_config["label_col"].keys())
             self.final_config["data"]["task_names"] = task_names
