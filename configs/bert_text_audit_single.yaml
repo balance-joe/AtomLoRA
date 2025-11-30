@@ -1,0 +1,86 @@
+# configs/bert_text_audit_single.yaml
+# 文本审计模型配置：BERT-base + LoRA微调 + 错词标记识别
+# 生产环境版本：完整训练配置，追求最佳效果
+
+# --- 1. 实验基本定义 ---
+exp_id: "bert_text_audit_single_task_final"                    # 实验标识：用于日志记录和模型保存命名
+description: "文本审计双任务：误报识别(单分类)。使用 LoRA 微调和错词标记。"  # 实验描述：说明任务目标和方法
+base_config: "templates/bert_lora_template.yaml"           # 基础配置模板：继承共享配置，避免重复
+task_type: "single_cls"                                     # 任务类型：单任务分类，简化处理逻辑
+
+# --- 2. 数据配置 ---
+data:
+  # 数据路径配置 - 请根据实际文件位置修改
+  train_path: "./data/raw/bert_text_audit_single/train.jsonl"  # 训练数据路径：JSONL格式，包含标注样本
+  dev_path: "./data/raw/bert_text_audit_single/dev.jsonl"      # 验证数据路径：用于早停和超参数调优
+  test_path: "./data/raw/bert_text_audit_single/test.jsonl"    # 测试数据路径：最终模型性能评估
+  max_len: 256                                              # 文本最大长度：过长截断，不足填充，平衡效果和效率
+  
+  text_col: "text"                                          # 文本字段名：数据中文本内容的列名
+  
+  # 标签配置 - 单任务误报识别
+  label_col: 
+    misreport: "is_misreport_label"                         # 误报标签列：数据中标签的字段名
+    
+  # 标签取值范围 - 用于自动创建映射关系
+  label_subset: 
+    misreport: [0, 1]                                       # 标签取值：0=非误报，1=误报
+
+  # 标签映射关系 - 数字索引到可读文本
+  label_mapping:
+    misreport: {0 : "非误报", 1 : "误报"}                   # 标签解释：索引到中文的映射
+
+# --- 3. Tokenizer配置 - 错词标记特殊处理 ---
+tokenizer:
+  add_special_tokens: True                                  # 添加特殊标记：启用自定义token扩展
+  special_tokens: 
+    - "[ERROR]"                                             # 错误开始标记：标识错词起始位置
+    - "[/ERROR]"                                            # 错误结束标记：标识错词结束位置
+    - "NOSUGGEST"                                           # 无建议标记：标识无需修正的词
+    
+# --- 4. 模型架构配置 ---
+model:
+  dropout: 0.15                                             # 丢弃率：防止过拟合，增加模型泛化能力
+  freeze_bert: True                                          # 冻结BERT：只训练LoRA和分类头，节省显存
+  arch: "bert-base-chinese"                                 # 模型架构：使用BERT-base中文预训练模型
+  path: "./models/bert-base-chinese"                        # 模型路径：本地预训练模型文件位置
+  
+  # LoRA 配置 - 低秩适配微调，平衡效果和效率
+  lora:
+    rank: 8                                                 # 秩大小：低秩矩阵维度，越大效果越好但训练越慢
+    alpha: 16                                               # 缩放系数：控制LoRA更新幅度，通常为rank的2倍
+    dropout: 0.05                                           # 丢弃率：LoRA层随机失活，防止过拟合
+    target_modules: ["self.query", "self.key", "self.value"]  # 目标模块：适配注意力层的三个核心组件
+    bias: "none"                                            # 偏置项：不训练偏置参数，节省显存加速训练
+
+# --- 5. 训练超参数配置 - 生产环境完整训练 ---
+train:
+  num_epochs: 14                                            # 训练轮数：充分训练确保模型收敛到最优
+  batch_size: 20                                            # 批次大小：平衡显存占用和训练稳定性
+  gradient_accumulation_steps: 3                            # 梯度累积：模拟大批次训练，提升训练效果
+  warmup_ratio: 0.1                                         # 热身比例：10%训练步数用于学习率预热
+  
+  # 早停策略 - 防止过拟合，自动选择最佳模型
+  early_stopping:
+    patience: 3                                             # 耐心值：连续3轮无提升则停止训练
+    metric: "f1"                                        # 监控指标：使用平均F1分数作为早停依据
+    
+  # 损失权重 - 多任务时调整各任务重要性（当前为单任务）
+  loss_weight: [1.0, 1.2]                                  # 权重配置：误报任务权重1.0，风险任务权重1.2
+
+  # 优化器配置 - 分组学习率，不同参数组使用不同学习率
+  optimizer:
+    type: "AdamW"                                           # 优化器类型：AdamW，带权重衰减的正则化
+    # 分组学习率：针对不同参数类型设置差异化学习率
+    groups:
+      bert: 2e-6                                            # BERT参数：极低学习率，轻微调整预训练权重
+      lora: 1.5e-4                                          # LoRA参数：较高学习率，快速适配新任务
+      classifier: 5e-4                                      # 分类头：高学习率，从头开始快速训练
+  
+  # 学习率调度器 - 动态调整学习率提升训练效果
+  scheduler_type: "cosine"                                  # 调度类型：余弦退火，学习率先升后降
+
+# --- 6. 资源调度配置 ---
+resources:
+  priority: "high"                                          # 任务优先级：高优先级获取计算资源
+  gpus: "auto"                                              # GPU设置：自动检测并使用可用GPU设备

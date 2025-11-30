@@ -27,9 +27,6 @@ class MetricManager:
             return metrics
             
         # 2. 双任务 (定制逻辑：misreport -> binary, risk -> macro)
-        # 必须知道哪个 task 是哪个含义，这里通过 task name 判断
-        # 假设 config['data']['task_names'] = ['misreport', 'risk_level']
-        
         loss_weights = self.config["train"].get("loss_weight", [1.0, 1.0])
         
         for i, (task_name, logits) in enumerate(all_logits.items()):
@@ -43,7 +40,6 @@ class MetricManager:
                 metrics[f"{task_name}_f1_macro"] = score
             else:
                 # 误报：Binary F1 (假设 0/1) 或 Macro
-                # 旧代码用的是 binary
                 score = f1_score(labels, preds, average='macro') # 安全起见用 macro，或根据 id 0/1 调整
                 metrics[f"{task_name}_f1"] = score
                 

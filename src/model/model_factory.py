@@ -17,7 +17,7 @@ def load_tokenizer(config):
     logger = get_logger(config["exp_id"])
 
     try:
-        # 基础Tokenizer加载（移除冲突的add_special_tokens参数）
+        # 基础Tokenizer加载
         tokenizer = AutoTokenizer.from_pretrained(
             model_path,
             do_lower_case=tokenizer_config.get("do_lower_case", True)  # 仅保留有效参数
@@ -44,8 +44,9 @@ def load_tokenizer(config):
 
 
 
-class MultiTaskTextClassifier(nn.Module):
+class TaskTextClassifier(nn.Module):
     """
+    模型任务加载器
     """
     def __init__(self, config, tokenizer):
         super().__init__()
@@ -53,23 +54,23 @@ class MultiTaskTextClassifier(nn.Module):
         self.task_type = config["task_type"]
         self.logger = get_logger(config["exp_id"])
         
-        # 1. 关键修改：使用AutoModel而不是AutoModelForSequenceClassification
         model_arch = config["model"]["arch"]
         model_path = config["model"].get("path", model_arch)
+        # 1. 使用AutoModel
         self.bert = AutoModel.from_pretrained(
             model_path,
             output_hidden_states=True  # 确保输出隐藏状态
         )
         
-        # 2. Resize Embedding (保持不变)
+        # 2. Resize Embedding
         if len(tokenizer) > self.bert.config.vocab_size:
             self.bert.resize_token_embeddings(len(tokenizer))
             self.logger.info(f"Resize embeddings to {len(tokenizer)}")
 
-        # 3. 关键修改：LoRA任务类型改为FEATURE_EXTRACTION
+        # 3. LoRA任务类型使用FEATURE_EXTRACTION
         self._inject_lora()
         
-        # 4. 构建分类头 (保持不变)
+        # 4. 构建分类头
         self.classifiers = self._build_classifiers()
         
         # 5. 损失函数
@@ -77,7 +78,7 @@ class MultiTaskTextClassifier(nn.Module):
 
     def _inject_lora(self):
         lora_conf = self.config["model"]["lora"]
-        # 关键修改：TaskType改为FEATURE_EXTRACTION
+        # 使用FEATURE_EXTRACTION
         peft_config = LoraConfig(
             task_type=TaskType.FEATURE_EXTRACTION,  # 修改这里
             inference_mode=False,
@@ -95,7 +96,7 @@ class MultiTaskTextClassifier(nn.Module):
         hidden_size = self.bert.config.hidden_size
         dropout_prob = self.config["model"].get("dropout", 0.1)
         
-        # 关键修改：从label_col获取任务名称
+        # 从label_col获取任务名称
         if self.task_type == "single_cls":
             # 1. 获取label_mapping配置（是字典，如{'misreport': {0:..., 1:...}}）
             label_mapping_config = self.config["data"]["label_mapping"]
@@ -139,7 +140,7 @@ class MultiTaskTextClassifier(nn.Module):
         # BERT 前向传播
         outputs = self.bert(**bert_kwargs)
         
-        # 关键修改：正确获取[CLS] token的池化输出
+        # 获取[CLS] token的池化输出
         last_hidden_state = outputs.last_hidden_state
         pooled_output = last_hidden_state[:, 0, :]
         
@@ -148,7 +149,7 @@ class MultiTaskTextClassifier(nn.Module):
         logits_dict = {}
         total_loss = 0.0
         
-        # 关键修改：从label_col获取任务名称
+        # 从label_col获取任务名称
         if self.task_type == "single_cls":
             task_names = ["default"]
         else:
@@ -173,7 +174,7 @@ class MultiTaskTextClassifier(nn.Module):
             
             if labels is not None:
                 if self.task_type == "single_cls":
-                    # 关键修复：处理单任务下labels是字典的情况
+                    # 处理单任务下labels是字典的情况
                     if isinstance(labels, dict):
                         # 取字典中第一个任务的标签（或指定"misreport"）
                         task_label = next(iter(labels.values()))  # 通用取第一个

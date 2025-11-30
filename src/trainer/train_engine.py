@@ -39,17 +39,17 @@ class Trainer:
         bert_params = [p for n, p in self.model.named_parameters() 
                     if "lora_" not in n and "classifiers" not in n and p.requires_grad]
 
-        # 2. 构建分组（关键修改：从config的正确路径读取）
+        # 2. 构建分组
         optimizer_grouped_parameters = []
         
-        # 关键修改：从正确的配置路径读取学习率
+        # 从的配置路径读取学习率
         lr_config = self.config["train"]["optimizer"]["groups"]
         
         # LoRA 组
         if lora_params:
             optimizer_grouped_parameters.append({
                 "params": lora_params,
-                "lr": float(lr_config["lora"]),  # 修正路径
+                "lr": float(lr_config["lora"]),
                 "weight_decay": 0.01
             })
             
@@ -57,7 +57,7 @@ class Trainer:
         if classifier_params:
             optimizer_grouped_parameters.append({
                 "params": classifier_params,
-                "lr": float(lr_config["classifier"]),  # 修正路径
+                "lr": float(lr_config["classifier"]),
                 "weight_decay": 0.01
             })
             
@@ -65,7 +65,7 @@ class Trainer:
         if bert_params:
             optimizer_grouped_parameters.append({
                 "params": bert_params,
-                "lr": float(lr_config["bert"]),  # 修正路径
+                "lr": float(lr_config["bert"]),
                 "weight_decay": 0.001
             })
             
@@ -165,7 +165,7 @@ class Trainer:
             # 获取单任务的标签键（比如'misreport'）
             label_col_config = self.config["data"]["label_col"]
             if isinstance(label_col_config, dict):
-                single_task_key = next(iter(label_col_config.keys()))  # 拿到'misreport'
+                single_task_key = next(iter(label_col_config.keys()))  # 拿到'标签'
             else:
                 single_task_key = label_col_config
         else:
@@ -190,7 +190,7 @@ class Trainer:
                 for t in task_names:
                     if self.config["task_type"] == "single_cls":
                         logit = outputs.get("default", outputs) if isinstance(outputs, dict) else outputs
-                        # 关键修复：处理字典格式的labels
+                        # 处理字典格式的labels
                         if isinstance(labels, dict):
                             label = labels[single_task_key]  # 提取张量（如labels['misreport']）
                         else:
