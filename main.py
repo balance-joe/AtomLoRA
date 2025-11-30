@@ -8,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from src.config.parser import parse_config
 from src.utils.logger import init_logger
-from src.model.model_factory import load_tokenizer, TaskTextClassifier
+from src.model.model_factory import load_tokenizer, MultiTaskTextClassifier
 from src.data.data_processor import load_dataset
 from src.trainer.train_engine import Trainer
 
@@ -37,7 +37,7 @@ def main(config_path):
     # 4. Model
     logger.info("构建模型...")
     # 传入 tokenizer 以便 resize embedding
-    model = TaskTextClassifier(config, tokenizer)
+    model = MultiTaskTextClassifier(config, tokenizer)
     
     # 5. Trainer
     logger.info("初始化训练类...")
@@ -56,7 +56,8 @@ def main(config_path):
 
 if __name__ == "__main__":
     # 可以用 argparse，这里为了简便直接调用
-    main("./configs/bert_text_audit_multi.yaml")
-    main("./configs/bert_text_audit_single.yaml")
-    main("./configs/ernie_text_audit_multi.yaml")
-    main("./configs/ernie_text_audit_single.yaml")
+    # 请确保 yaml 文件路径正确
+    main(r"D:\python\AtomLoRA\configs\bert_text_audit_multi.yaml")
+    main(r"D:\python\AtomLoRA\configs\bert_text_audit_single.yaml")
+    main(r"D:\python\AtomLoRA\configs\ernie_text_audit_multi.yaml")
+    main(r"D:\python\AtomLoRA\configs\ernie_text_audit_single.yaml")
