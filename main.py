@@ -8,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from src.config.parser import parse_config
 from src.utils.logger import init_logger
-from src.model.model_factory import load_tokenizer, MultiTaskTextClassifier
+from src.model.model_factory import load_tokenizer, TaskTextClassifier
 from src.data.data_processor import load_dataset
 from src.trainer.train_engine import Trainer
 
@@ -37,7 +37,7 @@ def main(config_path):
     # 4. Model
     logger.info("构建模型...")
     # 传入 tokenizer 以便 resize embedding
-    model = MultiTaskTextClassifier(config, tokenizer)
+    model = TaskTextClassifier(config, tokenizer)
     
     # 5. Trainer
     logger.info("初始化训练类...")
