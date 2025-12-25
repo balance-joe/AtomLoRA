@@ -1,14 +1,12 @@
 # src/predict/predictor.py
 import os
 import torch
-import json
-import yaml
+
 from typing import Dict, List, Any, Union, Optional
 from tqdm import tqdm
-import numpy as np
-
 from src.utils.logger import get_logger
 from src.model.model_factory import TaskTextClassifier, load_tokenizer
+from peft import PeftModel
 
 # 与训练代码对齐的默认参数（统一管理）
 DEFAULT_CONFIG = {
@@ -131,59 +129,261 @@ class TextAuditPredictor:
         else:
             self.logger.warning("⚠️ 未找到训练好的Tokenizer，从配置加载")
             return load_tokenizer(self.config)
-    
+
     def _initialize_model(self):
-        """初始化模型（匹配训练代码的结构）"""
+        """
+        初始化模型（严格匹配训练代码结构）
+        新增：模型初始化后校验LoRA权重完整性
+        """
         try:
-            # 初始化模型结构
+            # 1. 创建模型结构
             self.model = TaskTextClassifier(self.config, self.tokenizer)
             self.model.to(self.device)
-            self.model.eval()
-            
-            # 加载模型权重
+
+            # 2. 加载模型权重（顺序：完整模型 -> LoRA -> 分类头）
             self._load_model_weights()
-            
+
+            # 3. 评估/预测模式
+            self.model.eval()
+            self.logger.info(f"✅ 模型初始化完成 | 设备: {self.device} | 任务类型: {self.task_type}")
+
+            # ========== 新增：模型初始化后LoRA权重全局校验 ==========
+            self.logger.info("🔍 开始全局LoRA权重校验...")
+            try:
+                from peft.utils import get_peft_model_state_dict
+                # 尝试提取LoRA权重
+                lora_state_dict = get_peft_model_state_dict(self.model.bert)
+                self.logger.info(f"📊 LoRA权重键总数: {len(lora_state_dict.keys())}")
+
+                # 打印前5个LoRA权重键（直观验证）
+                if lora_state_dict:
+                    top5_keys = list(lora_state_dict.keys())[:5]
+                    for idx, k in enumerate(top5_keys):
+                        self.logger.info(f"   第{idx + 1}个LoRA权重键: {k}")
+                else:
+                    self.logger.error("❌ 未提取到任何LoRA权重键！")
+
+            except ImportError:
+                self.logger.error("❌ 缺少peft库，无法提取LoRA权重！")
+            except AttributeError as e:
+                self.logger.error(f"❌ 模型无LoRA相关属性: {e}")
+            except Exception as e:
+                self.logger.error(f"❌ 提取LoRA权重失败: {str(e)}")
+            # ======================================================
+
         except Exception as e:
             self.logger.error(f"❌ 模型初始化失败: {e}")
             raise
-    
-    def _load_model_weights(self):
-        """加载模型权重（兼容训练代码的保存逻辑）"""
-        # 1. 加载LoRA适配器
-        lora_path = os.path.join(self.exp_dir, "lora_adapter")
-        if os.path.exists(lora_path):
+
+
+    def _load_model_weights(self, torch=None):
+        """
+        加载训练好的模型权重（PEFT 标准 LoRA 模式）
+        顺序：
+            1️⃣ LoRA 适配器 (adapter_model.safetensors/bin)
+            2️⃣ 分类头 (classifiers.pt)
+
+        关键修正：
+        1. 兼容加载 .bin 和 .safetensors 格式。
+        2. 移除 model.pt 加载。
+        3. 关键：若 self.model.bert 已是 PeftModel (通过 _inject_lora)，则使用 load_adapter 加载权重。
+        """
+
+        # 1. 移除 model.pt 加载：
+        self.logger.info("ℹ️ LoRA模式，跳过完整模型 model.pt 的加载。")
+
+        # 2. LoRA 适配器加载
+        lora_path = self.exp_dir
+
+        # 核心修正：检查 adapter_model.safetensors 和 adapter_model.bin
+        adapter_bin_path = os.path.join(lora_path, "adapter_model.bin")
+        adapter_safetensors_path = os.path.join(lora_path, "adapter_model.safetensors")
+
+        # 检查适配器文件是否存在
+        if os.path.exists(adapter_safetensors_path) or os.path.exists(adapter_bin_path):
             try:
                 from peft import PeftModel
-                dtype = torch.float16 if self.config["model"].get("fp16", False) else torch.float32
-                self.model.bert = PeftModel.from_pretrained(
-                    self.model.bert, 
-                    lora_path,
-                    torch_dtype=dtype
-                )
-                self.logger.info("✅ LoRA适配器加载成功")
+
+                # 【关键逻辑修正】
+                # 如果 TaskTextClassifier 已经在 __init__ 中注入了 LoRA 结构 (PeftModel)，
+                # 我们只需要加载权重到这个已存在的结构中，避免双重包装。
+                if not isinstance(self.model.bert, PeftModel):
+                    self.logger.error("❌ 模型加载错误：self.model.bert 不是 PeftModel 实例。")
+                    self.logger.error("请检查 Predictor/Evaluator 初始化逻辑，确保 LoRA 结构已通过 _inject_lora 注入。")
+                    # 如果不是 PeftModel，则尝试使用 from_pretrained 进行包装（这是为了兼容旧逻辑，但会产生警告）
+                    # 确保 dtype 匹配
+                    dtype_config = self.config["train"].get("mixed_precision")
+                    dtype = torch.float16 if dtype_config in ["fp16"] else \
+                        torch.bfloat16 if dtype_config in ["bf16"] else torch.float32
+
+                    self.logger.warning(
+                        "⚠️ 模型未预先包装。尝试使用 PeftModel.from_pretrained 进行加载和包装，可能产生 'Found missing adapter keys' 警告。")
+                    self.model.bert = PeftModel.from_pretrained(
+                        self.model.bert,
+                        lora_path,
+                        torch_dtype=dtype
+                    )
+                else:
+                    # 推荐的加载方式：使用 load_adapter 加载权重到已存在的 PeftModel 槽位
+                    self.logger.info("✅ 检测到 PeftModel 实例，使用 load_adapter 加载权重。")
+                    self.model.bert.load_adapter(lora_path, adapter_name="default")
+
+                # ========== LoRA权重精细化校验 ==========
+                self.logger.info("🔍 开始LoRA权重有效性校验...")
+
+                lora_A_count = 0
+                lora_B_count = 0
+                invalid_lora_A = 0
+                untrained_lora_B = 0
+
+                # 遍历所有参数进行校验
+                for name, param in self.model.bert.named_parameters():
+                    if "lora_A" in name:
+                        lora_A_count += 1
+                        # 检查 lora_A 是否接近零（加载失败的迹象）
+                        if param.mean().abs().cpu().item() < 1e-8:
+                            invalid_lora_A += 1
+                            self.logger.warning(
+                                f"⚠️ LoRA权重 {name} 均值接近零 ({param.mean().abs().cpu().item():.8f})，可能加载失败。")
+
+                    elif "lora_B" in name:
+                        lora_B_count += 1
+                        # 检查 lora_B 是否接近零（训练不充分的警示）
+                        if param.mean().abs().cpu().item() < 1e-6:
+                            untrained_lora_B += 1
+
+                # 总结与判断
+                if lora_A_count == 0:
+                    self.logger.error("❌ LoRA适配器加载失败：未检测到任何 lora_A 权重！")
+                elif invalid_lora_A > 0:
+                    self.logger.error(f"❌ LoRA适配器加载失败：{invalid_lora_A} 个 lora_A 权重异常，请检查训练保存逻辑！")
+                else:
+                    self.logger.info("✅ LoRA适配器加载成功（所有 lora_A 权重有效）")
+                    if untrained_lora_B == lora_B_count and lora_B_count > 0:
+                        self.logger.warning(
+                            f"⚠️ LoRA-B ({lora_B_count}个) 权重均值仍接近 0，模型可能欠拟合或训练步数过少。")
+
+                # ==============================================
+
+            except ImportError:
+                self.logger.error("❌ LoRA加载失败：缺少peft库，请执行 pip install peft")
             except Exception as e:
-                self.logger.error(f"⚠️ LoRA加载失败: {e}")
-        
-        # 2. 加载分类头权重
+                self.logger.error(f"⚠️ LoRA适配器加载失败: {str(e)}")
+        else:
+            self.logger.warning(f"⚠️ 标准PEFT适配器文件 (adapter_model.bin 或 .safetensors) 不存在于 {lora_path}")
+
+        # 3. 分类头加载 (逻辑不变)
         classifier_path = os.path.join(self.exp_dir, "classifiers.pt")
         if os.path.exists(classifier_path):
             try:
-                classifier_state = torch.load(classifier_path, map_location=self.device)
-                self.model.classifiers.load_state_dict(classifier_state)
+                # 【关键修复】确保 torch 在此作用域可用
+                import torch
+
+                clf_state = torch.load(classifier_path, map_location=self.device)
+                self.model.classifiers.load_state_dict(clf_state)
                 self.logger.info("✅ 分类头权重加载成功")
             except Exception as e:
                 self.logger.error(f"⚠️ 分类头加载失败: {e}")
-        
-        # 3. 回退：加载完整模型
-        model_path = os.path.join(self.exp_dir, "model.pt")
-        if os.path.exists(model_path) and not hasattr(self.model.bert, "peft_config"):
-            try:
-                state_dict = torch.load(model_path, map_location=self.device)
-                self.model.load_state_dict(state_dict)
-                self.logger.info("✅ 完整模型权重加载成功")
-            except Exception as e:
-                self.logger.error(f"⚠️ 完整模型加载失败: {e}")
-    
+        else:
+            self.logger.warning(f"⚠️ 分类头权重文件 {classifier_path} 不存在。")
+        # 确保模型在设备上
+        self.model.to(self.device)
+        self.model.eval()
+
+
+    # def _load_model_weights(self):
+    #     """
+    #     加载训练好的模型权重（训练保存顺序兼容性优化）
+    #     顺序：
+    #         1️⃣ 完整模型 model.pt（覆盖 base+classifier）
+    #         2️⃣ LoRA 适配器 lora_adapter（覆盖 Bert 层）
+    #         3️⃣ 分类头 classifiers.pt（覆盖 classifier）
+    #     新增：LoRA加载后逐权重校验（是否存在/是否随机）
+    #     """
+    #
+    #     # 完整模型
+    #     model_path = os.path.join(self.exp_dir, "model.pt")
+    #     if os.path.exists(model_path):
+    #         try:
+    #             state_dict = torch.load(model_path, map_location=self.device)
+    #             self.model.load_state_dict(state_dict)
+    #             self.logger.info("✅ 完整模型权重加载成功")
+    #         except Exception as e:
+    #             self.logger.warning(f"⚠️ 加载完整模型失败: {e}")
+    #
+    #     # LoRA 适配器
+    #     lora_path = os.path.join(self.exp_dir, "lora_adapter")
+    #     if os.path.exists(lora_path):
+    #         try:
+    #             from peft import PeftModel  # 确保导入PeftModel
+    #             dtype = torch.float16 if self.config["model"].get("fp16", False) else torch.float32
+    #             self.model.bert = PeftModel.from_pretrained(
+    #                 self.model.bert,
+    #                 lora_path,
+    #                 torch_dtype=dtype
+    #             )
+    #
+    #             # ========== 新增：LoRA权重精细化校验 ==========
+    #             self.logger.info("🔍 开始LoRA权重有效性校验...")
+    #             has_lora_weights = False
+    #             random_lora_count = 0
+    #             total_lora_count = 0
+    #             invalid_lora_keys = []
+    #
+    #             # 遍历所有参数，检查LoRA核心权重
+    #             for name, param in self.model.bert.named_parameters():
+    #                 if "lora_A" in name or "lora_B" in name:
+    #                     total_lora_count += 1
+    #                     has_lora_weights = True
+    #                     # 计算权重均值（判断是否为随机初始化）
+    #                     param_mean = param.mean().abs().cpu().item()
+    #                     if param_mean < 1e-6:
+    #                         random_lora_count += 1
+    #                         invalid_lora_keys.append(name)
+    #                         self.logger.warning(f"⚠️ LoRA权重 {name} 为随机值（均值：{param_mean:.8f}）")
+    #                     else:
+    #                         self.logger.info(f"✅ LoRA权重 {name} 有效（均值：{param_mean:.4f}）")
+    #
+    #             # 输出校验总结
+    #             self.logger.info(f"\n📊 LoRA权重校验总结:")
+    #             self.logger.info(f"   检测到LoRA权重总数: {total_lora_count}")
+    #             self.logger.info(f"   随机初始化权重数: {random_lora_count}")
+    #             self.logger.info(f"   有效权重数: {total_lora_count - random_lora_count}")
+    #
+    #             # 修正日志提示：基于实际校验结果判断是否真的加载成功
+    #             if total_lora_count == 0:
+    #                 self.logger.error("❌ LoRA适配器加载失败：未检测到任何lora_A/lora_B权重！")
+    #             elif random_lora_count == total_lora_count:
+    #                 self.logger.error("❌ LoRA适配器加载失败：所有权重均为随机初始化！")
+    #             elif random_lora_count > 0:
+    #                 self.logger.warning(
+    #                     f"⚠️ LoRA适配器部分失效：{random_lora_count}个权重为随机值（{invalid_lora_keys[:3]}...）")
+    #             else:
+    #                 self.logger.info("✅ LoRA适配器加载成功（所有权重有效）")
+    #             # ==============================================
+    #
+    #         except ImportError:
+    #             self.logger.error("❌ LoRA加载失败：缺少peft库，请执行 pip install peft")
+    #         except Exception as e:
+    #             self.logger.error(f"⚠️ LoRA加载失败: {str(e)}")
+    #     else:
+    #         self.logger.warning(f"⚠️ LoRA适配器目录不存在: {lora_path}")
+    #
+    #     # 分类头
+    #     classifier_path = os.path.join(self.exp_dir, "classifiers.pt")
+    #     if os.path.exists(classifier_path):
+    #         try:
+    #             clf_state = torch.load(classifier_path, map_location=self.device)
+    #             self.model.classifiers.load_state_dict(clf_state)
+    #             self.logger.info("✅ 分类头权重加载成功")
+    #         except Exception as e:
+    #             self.logger.error(f"⚠️ 分类头加载失败: {e}")
+    #
+    #     # 确保模型在设备上
+    #     self.model.to(self.device)
+    #     self.model.eval()
+
+
     def predict(self, data_sample: Dict[str, Any]) -> Dict[str, Any]:
         """
         预测单条数据
@@ -217,43 +417,43 @@ class TextAuditPredictor:
         # 预测
         with torch.no_grad():
             outputs = self.model(input_ids, attention_mask, labels=None)
-        
+
         # 后处理结果
         return self._postprocess_result(outputs, data_sample)
     
-    def predict_batch(self, data_samples: List[Dict[str, Any]], 
+    def predict_batch(self, data_samples: List[Dict[str, Any]],
                      batch_size: int = None, show_progress: bool = True) -> List[Dict[str, Any]]:
         """
         高效批量预测（GPU并行加速）
-        
+
         Args:
             data_samples: 数据样本列表
             batch_size: 批次大小（None=使用训练配置的batch_size）
             show_progress: 是否显示进度条
-            
+
         Returns:
             List[Dict]: 批量预测结果
         """
         if not data_samples:
             self.logger.warning("⚠️ 空数据样本列表")
             return []
-        
+
         # 使用训练配置的batch_size作为默认值
         batch_size = batch_size or self.config["train"]["batch_size"]
         all_results = []
         text_col = self.config["data"]["text_col"]
-        
+
         # 进度条
         iterator = range(0, len(data_samples), batch_size)
         if show_progress:
             iterator = tqdm(iterator, desc=f"批量预测 (batch={batch_size})")
-        
+
         self.model.eval()
         with torch.no_grad():
             for batch_start in iterator:
                 batch_end = batch_start + batch_size
                 batch_samples = data_samples[batch_start:batch_end]
-                
+
                 # 提取批量文本
                 batch_texts = []
                 valid_indices = []
@@ -264,10 +464,10 @@ class TextAuditPredictor:
                     else:
                         self.logger.warning(f"跳过无效样本 {batch_start+idx}: 缺少{text_col}字段")
                         all_results.append({"error": f"缺少{text_col}字段", "sample": sample})
-                
+
                 if not batch_texts:
                     continue
-                
+
                 # 批量Tokenize
                 encoded = self.tokenizer(
                     batch_texts,
@@ -276,13 +476,13 @@ class TextAuditPredictor:
                     max_length=self.config["data"]["max_len"],
                     return_tensors='pt'
                 )
-                
+
                 input_ids = encoded['input_ids'].to(self.device)
                 attention_mask = encoded['attention_mask'].to(self.device)
-                
+
                 # 批量前向传播
                 outputs = self.model(input_ids, attention_mask, labels=None)
-                
+
                 # 批量后处理
                 for idx, text_idx in enumerate(valid_indices):
                     sample = batch_samples[text_idx]
@@ -295,16 +495,16 @@ class TextAuditPredictor:
                         error_msg = f"样本{batch_start+text_idx}处理失败: {str(e)}"
                         self.logger.warning(error_msg)
                         all_results.append({"error": error_msg, "sample": sample})
-        
+
         return all_results
-    
+
     def _extract_single_output(self, outputs: Union[Dict[str, torch.Tensor], torch.Tensor], idx: int):
         """从批量输出中提取单条结果"""
         if isinstance(outputs, dict):
             return {k: v[idx:idx+1] for k, v in outputs.items()}
         else:
             return outputs[idx:idx+1]
-    
+
     def _postprocess_result(self, outputs: Union[Dict[str, torch.Tensor], torch.Tensor], 
                            data_sample: Dict[str, Any]) -> Dict[str, Any]:
         """后处理预测结果（兼容单/多任务）"""
@@ -408,19 +608,3 @@ class TextAuditPredictor:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         self.logger.info("🔌 预测器资源已释放")
-
-
-# # 便捷函数：快速创建预测器
-# def create_predictor(config_path: str, device: Union[str, torch.device, None] = None) -> TextAuditPredictor:
-#     """
-#     从配置文件创建预测器
-    
-#     Args:
-#         config_path: 配置文件路径
-#         device: 计算设备
-        
-#     Returns:
-#         TextAuditPredictor实例
-#     """
-#     with open(config_path, "r", encoding="utf-8") as f:
-#         config = yaml.safe_load(f)

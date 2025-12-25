@@ -138,8 +138,16 @@ class Trainer:
                     self.optimizer.step()
                     self.scheduler.step()
                     self.optimizer.zero_grad()
+                    # 【关键验证】每100步打印lora_B权重均值（确保非0）
+                    if step % 100 == 0:
+                        for name, param in self.model.bert.named_parameters():
+                            if "lora_B" in name and param.requires_grad:
+                                lora_b_mean = torch.mean(param.data).item()
+                                self.logger.info(f"📌 Step {step} | {name} 均值: {lora_b_mean:.6f}")
+                                break  # 只打印一个lora_B参数即可
+
                     global_step += 1
-                
+
                 pbar.set_postfix({"loss": f"{loss.item() * grad_accum:.4f}"})
             
             # 评估
@@ -211,17 +219,17 @@ class Trainer:
     
     def save_model(self):
         """
-        移植旧代码的保存逻辑：分别保存 LoRA, Tokenizer, Classifiers
+        [PEFT标准] 只保存 LoRA 适配器 (adapter_model.bin) 和 分类头 (classifiers.pt)
         """
-        # 1. 保存 LoRA (model.bert 是 PeftModel)
-        self.model.bert.save_pretrained(self.lora_save_path)
-        
+        # 1. 保存 LoRA 适配器 (关键：直接用 output_dir)
+        # 这一步会生成 adapter_model.bin 和 adapter_config.json
+        self.model.bert.save_pretrained(self.output_dir)
+        self.logger.info(f"✅ LoRA 适配器权重已保存至: {self.output_dir}")
+
         # 2. 保存 Tokenizer
         self.tokenizer.save_pretrained(self.tokenizer_save_path)
-        
+
         # 3. 保存 Classifiers (state_dict)
         clf_path = os.path.join(self.output_dir, "classifiers.pt")
         torch.save(self.model.classifiers.state_dict(), clf_path)
-        
-        # 4. 保存 Config 快照 (可选)
-        # torch.save(self.config, os.path.join(self.output_dir, "config.pt"))
+        self.logger.info(f"✅ 分类头权重已保存至: {clf_path}")

@@ -56,7 +56,8 @@ class TaskTextClassifier(nn.Module):
         
         model_arch = config["model"]["arch"]
         model_path = config["model"].get("path", model_arch)
-        # 1. 使用AutoModel
+
+        # 1. 使用AutoModel 加载基础BERT模型
         self.bert = AutoModel.from_pretrained(
             model_path,
             output_hidden_states=True  # 确保输出隐藏状态
@@ -78,9 +79,16 @@ class TaskTextClassifier(nn.Module):
 
     def _inject_lora(self):
         lora_conf = self.config["model"]["lora"]
-        # 使用FEATURE_EXTRACTION
+        if not lora_conf.get("enabled", False):
+            return  # LoRA 未启用，跳过注入
+
+        if hasattr(self.bert, "peft_config"):
+            self.logger.warning("⚠️ LoRA结构已存在（跳过重复注入）。")
+            return
+
+        # LoRA配置
         peft_config = LoraConfig(
-            task_type=TaskType.FEATURE_EXTRACTION,  # 修改这里
+            task_type=TaskType.FEATURE_EXTRACTION,
             inference_mode=False,
             r=lora_conf["rank"],
             lora_alpha=lora_conf["alpha"],
@@ -89,6 +97,7 @@ class TaskTextClassifier(nn.Module):
             bias=lora_conf.get("bias", "none")
         )
         self.bert = get_peft_model(self.bert, peft_config)
+        self.logger.info("✅ LoRA配置注入成功")
         self.bert.print_trainable_parameters()
         
         
@@ -119,7 +128,7 @@ class TaskTextClassifier(nn.Module):
                 mappings = self.config["data"]["label_maps"]
 
         classifiers = nn.ModuleDict()
-        
+
         for task_name, label_map in mappings.items():
             num_labels = len(label_map)
             classifiers[task_name] = nn.Sequential(
@@ -143,9 +152,10 @@ class TaskTextClassifier(nn.Module):
         # 获取[CLS] token的池化输出
         last_hidden_state = outputs.last_hidden_state
         pooled_output = last_hidden_state[:, 0, :]
-        
-        print(f"Pooled output shape: {pooled_output.shape}")
-        
+
+        # 这个打开了每一轮都会配置
+        # print(f"Pooled output shape: {pooled_output.shape}")
+
         logits_dict = {}
         total_loss = 0.0
         
