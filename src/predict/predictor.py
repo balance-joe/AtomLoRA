@@ -156,12 +156,12 @@ class TextAuditPredictor:
                 self.logger.info(f"📊 LoRA权重键总数: {len(lora_state_dict.keys())}")
 
                 # 打印前5个LoRA权重键（直观验证）
-                if lora_state_dict:
-                    top5_keys = list(lora_state_dict.keys())[:5]
-                    for idx, k in enumerate(top5_keys):
-                        self.logger.info(f"   第{idx + 1}个LoRA权重键: {k}")
-                else:
-                    self.logger.error("❌ 未提取到任何LoRA权重键！")
+                # if lora_state_dict:
+                    # top5_keys = list(lora_state_dict.keys())[:5]
+                    # for idx, k in enumerate(top5_keys):
+                        # self.logger.info(f"   第{idx + 1}个LoRA权重键: {k}")
+                # else:
+                #     self.logger.error("❌ 未提取到任何LoRA权重键！")
 
             except ImportError:
                 self.logger.error("❌ 缺少peft库，无法提取LoRA权重！")
