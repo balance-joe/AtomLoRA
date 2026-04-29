@@ -71,9 +71,20 @@ def main(config_path):
     predictor.close()
 
 if __name__ == "__main__":
-    # 可以用 argparse，这里为了简便直接调用
-    # main(r"D:\python\AtomLoRA\configs\bert_text_audit_multi.yaml")
-    # main(r"D:\python\AtomLoRA\configs\bert_text_audit_single.yaml")
-    # main(r"D:\python\AtomLoRA\configs\ernie_text_audit_multi.yaml")
-    # main(r"D:\python\AtomLoRA\configs\macbert_yq_class_0.2.yaml")
-    main(r"/home/czyun/AtomLoRA/configs/macbert_yq_class_0.2.yaml")
+    parser = argparse.ArgumentParser(description="AtomLoRA 推理入口")
+    parser.add_argument("--config", type=str, required=True, help="YAML 配置文件路径")
+    parser.add_argument("--text", type=str, default=None, help="单条文本预测")
+    args = parser.parse_args()
+
+    if args.text:
+        # 单条预测模式
+        config = parse_config(args.config)
+        init_logger(config["exp_id"], config["task_type"])
+        predictor = TextAuditPredictor(config=config)
+        text_col = config["data"]["text_col"]
+        result = predictor.predict({text_col: args.text})
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        predictor.close()
+    else:
+        # 批量预测模式（原有逻辑）
+        main(args.config)

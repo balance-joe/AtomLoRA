@@ -1,10 +1,15 @@
 import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import get_linear_schedule_with_warmup
 from src.utils.logger import get_logger
 from src.trainer.metric_manager import MetricManager
+from src.utils.paths import (
+    ADAPTER_DIR, CLASSIFIER_DIR, TOKENIZER_DIR, CLASSIFIER_FILE,
+    copy_config_to_output, save_metrics
+)
 
 class Trainer:
     def __init__(self, config, model, train_loader, dev_loader, tokenizer):
@@ -20,9 +25,10 @@ class Trainer:
         
         # 输出路径
         self.output_dir = os.path.join("outputs", config["exp_id"])
-        self.lora_save_path = os.path.join(self.output_dir, "lora_adapter")
-        self.tokenizer_save_path = os.path.join(self.output_dir, "tokenizer")
-        os.makedirs(self.output_dir, exist_ok=True)
+        self.tokenizer_save_path = os.path.join(self.output_dir, TOKENIZER_DIR)
+        os.makedirs(os.path.join(self.output_dir, ADAPTER_DIR), exist_ok=True)
+        os.makedirs(os.path.join(self.output_dir, CLASSIFIER_DIR), exist_ok=True)
+        copy_config_to_output(config, self.output_dir)
         
         # 初始化组件
         self.optimizer = self._build_optimizer()
@@ -77,28 +83,59 @@ class Trainer:
         grad_accum = self.config["train"].get("gradient_accumulation_steps", 1)
         total_steps = len(self.train_loader) * num_epochs // grad_accum
         warmup_ratio = self.config["train"].get("warmup_ratio", 0.1)
-        
+
         return get_linear_schedule_with_warmup(
             self.optimizer,
             num_warmup_steps=int(total_steps * warmup_ratio),
             num_training_steps=total_steps
         )
 
+    def _log_training_monitor(self, step, logits_dict, labels):
+        """定期打印训练过程中的置信度和 LoRA 权重状态，辅助调试"""
+        self.model.eval()
+        with torch.no_grad():
+            for task_name, logits in logits_dict.items():
+                probs = F.softmax(logits.detach(), dim=-1)
+                max_probs = probs.max(dim=-1).values
+                mean_conf = max_probs.mean().item()
+
+                preds = probs.argmax(dim=-1)
+                if isinstance(labels, dict):
+                    true_labels = labels.get(task_name, next(iter(labels.values())))
+                else:
+                    true_labels = labels
+                train_acc = (preds == true_labels).float().mean().item()
+
+                self.logger.info(
+                    f"📊 Step {step} | {task_name} | "
+                    f"置信度: {mean_conf:.4f} | 训练准确率: {train_acc:.4f}"
+                )
+
+        # LoRA 权重健康检查
+        for name, param in self.model.bert.named_parameters():
+            if "lora_B" in name and param.requires_grad:
+                lora_b_mean = torch.mean(param.data).item()
+                self.logger.info(f"📌 Step {step} | {name} 均值: {lora_b_mean:.6f}")
+                break
+        self.model.train()
+
     def train(self):
         epochs = self.config["train"]["num_epochs"]
         grad_accum = self.config["train"].get("gradient_accumulation_steps", 1)
         best_score = float('-inf')
+        best_metrics = {}
         global_step = 0
-        
+        monitor_interval = self.config["train"].get("monitor_interval", 100)
+
         self.logger.info("开始训练...")
-        
+
         for epoch in range(1, epochs + 1):
             self.model.train()
             epoch_loss = 0.0
-            
+
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}/{epochs}")
             self.optimizer.zero_grad()
-            
+
             for step, batch in enumerate(pbar):
                 # 移动数据
                 input_ids = batch["input_ids"].to(self.device)
@@ -108,43 +145,32 @@ class Trainer:
                     labels = {k: v.to(self.device) for k, v in labels.items()}
                 else:
                     labels = labels.to(self.device)
-                
-                # Forward - 安全处理返回值
+
+                # Forward
                 result = self.model(input_ids, mask, labels)
-                
-                # 检查返回值类型
+
                 if isinstance(result, tuple) and len(result) == 2:
-                    # 如果返回 (loss, logits_dict)
                     loss, logits_dict = result
-                    # 这问题先备注一下子，后续有时间了再说  
-                    # logits_dict未被使用：在训练过程中获取了模型的logits输出，但没有用于任何实际用途
-                    # 缺乏训练监控：无法实时查看模型预测效果和置信度
-                    # 调试困难：无法分析模型在学习什么
                 elif isinstance(result, torch.Tensor):
-                    # 如果只返回 loss 张量
                     loss = result
                     logits_dict = None
                 else:
-                    # 处理意外情况
                     raise ValueError(f"模型返回了意外的类型: {type(result)}")
 
                 # 梯度累积
                 loss = loss / grad_accum
                 loss.backward()
-                
+
                 epoch_loss += loss.item()
-                
+
                 if (step + 1) % grad_accum == 0:
                     self.optimizer.step()
                     self.scheduler.step()
                     self.optimizer.zero_grad()
-                    # 【关键验证】每100步打印lora_B权重均值（确保非0）
-                    if step % 100 == 0:
-                        for name, param in self.model.bert.named_parameters():
-                            if "lora_B" in name and param.requires_grad:
-                                lora_b_mean = torch.mean(param.data).item()
-                                self.logger.info(f"📌 Step {step} | {name} 均值: {lora_b_mean:.6f}")
-                                break  # 只打印一个lora_B参数即可
+
+                    # 训练监控：定期打印 logits 置信度和 LoRA 权重状态
+                    if global_step % monitor_interval == 0 and logits_dict is not None:
+                        self._log_training_monitor(global_step, logits_dict, labels)
 
                     global_step += 1
 
@@ -159,8 +185,13 @@ class Trainer:
             current_score = metrics.get("main_score", 0)
             if current_score > best_score:
                 best_score = current_score
+                best_metrics = metrics
                 self.save_model()
                 self.logger.info(f">>> 新模型诞生! 分数: {best_score:.4f}")
+
+        # 训练结束后保存最优指标
+        save_metrics(best_metrics, self.output_dir)
+        self.logger.info(f"✅ 最优指标已保存至: {os.path.join(self.output_dir, 'metrics.json')}")
 
     def evaluate(self):
         self.model.eval()
@@ -178,11 +209,10 @@ class Trainer:
                 single_task_key = label_col_config
         else:
             label_col_config = self.config["data"]["label_col"]
-            if isinstance(label_col_config, dict):
-                task_names = list(label_col_config.keys())
-            else:
-                task_names = ["misreport", "risk"]
-        
+            if not isinstance(label_col_config, dict):
+                raise ValueError("multi_cls 任务要求 data.label_col 为字典")
+            task_names = list(label_col_config.keys())
+
         for t in task_names:
             all_logits[t] = []
             all_labels[t] = []
@@ -219,17 +249,18 @@ class Trainer:
     
     def save_model(self):
         """
-        [PEFT标准] 只保存 LoRA 适配器 (adapter_model.bin) 和 分类头 (classifiers.pt)
+        [PEFT标准] 保存 LoRA 适配器、分类头、Tokenizer
         """
-        # 1. 保存 LoRA 适配器 (关键：直接用 output_dir)
-        # 这一步会生成 adapter_model.bin 和 adapter_config.json
-        self.model.bert.save_pretrained(self.output_dir)
-        self.logger.info(f"✅ LoRA 适配器权重已保存至: {self.output_dir}")
+        # 1. 保存 LoRA 适配器 -> adapter/ 子目录
+        adapter_dir = os.path.join(self.output_dir, ADAPTER_DIR)
+        self.model.bert.save_pretrained(adapter_dir)
+        self.logger.info(f"✅ LoRA 适配器权重已保存至: {adapter_dir}")
 
         # 2. 保存 Tokenizer
         self.tokenizer.save_pretrained(self.tokenizer_save_path)
 
-        # 3. 保存 Classifiers (state_dict)
-        clf_path = os.path.join(self.output_dir, "classifiers.pt")
-        torch.save(self.model.classifiers.state_dict(), clf_path)
-        self.logger.info(f"✅ 分类头权重已保存至: {clf_path}")
+        # 3. 保存 Classifiers -> classifier/ 子目录
+        clf_dir = os.path.join(self.output_dir, CLASSIFIER_DIR)
+        os.makedirs(clf_dir, exist_ok=True)
+        torch.save(self.model.classifiers.state_dict(), os.path.join(clf_dir, CLASSIFIER_FILE))
+        self.logger.info(f"✅ 分类头权重已保存至: {clf_dir}")

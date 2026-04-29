@@ -79,33 +79,17 @@ def load_dataset(config, path, tokenizer):
                     break
 
                 try:
-                    # # 优先尝试直接匹配
-                    # if raw_label in label_mapping[task_name]:
-                    #     label_id = label_mapping[task_name][raw_label]
-                        
-                    #     print('--------------------')
-                    #     print("task_name"+ task_name)
-                    #     print("raw_label"+ raw_label)
-                    #     print('--------------------')
-                    # # 其次尝试转字符串匹配 (兼容 json 读取 0 为 int，但 mapping key 为 "0" 的情况)
-                    # elif lookup_key in label_mapping[task_name]:
-                    #     print(222222)
-                    #     print(task_name)
-                    #     print(raw_label)
-                    #     print(111111)
-                    #     label_id = label_mapping[task_name][lookup_key]
-                    # else:
-                    #     raise KeyError
-                    
-                    # # =============== 核心修复 ==================
-                    # # 强制转换为整数！防止 YAML 配置写成 "1" 导致报错
-                    # print(label_id)
-                    # print(label_id)
-                    # print(label_id)
-                    label_id = raw_label
-                    labels[task_name] = int(label_id) 
-                    # ==========================================
-                    
+                    # 优先用反转映射查找（支持字符串和整数标签值）
+                    if raw_label in reversed_label_mapping.get(task_name, {}):
+                        label_id = reversed_label_mapping[task_name][raw_label]
+                    elif lookup_key in reversed_label_mapping.get(task_name, {}):
+                        label_id = reversed_label_mapping[task_name][lookup_key]
+                    elif isinstance(raw_label, (int, float)):
+                        # 数据本身就是整数标签，直接使用
+                        label_id = int(raw_label)
+                    else:
+                        raise KeyError(f"标签 '{raw_label}' 不在任务 '{task_name}' 的映射中")
+                    labels[task_name] = int(label_id)
                 except KeyError:
                     # 仅在DEBUG模式下打印详细错误，防止刷屏
                     # logger.debug(f"第{line_idx+1}行任务[{task_name}]标签[{raw_label}]不在映射中")

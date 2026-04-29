@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atomlora"
+version = "0.1.0"
+description = "Lightweight LoRA fine-tuning framework for text classification"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "GPL-2.0-only"
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.30",
+    "peft>=0.4",
+    "accelerate>=0.20",
+    "PyYAML>=6.0",
+    "scikit-learn>=1.0",
+    "tqdm>=4.60",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "fastapi>=0.100",
+    "uvicorn>=0.23",
+]
+
+[project.scripts]
+atomlora = "atomlora.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["atomlora*", "src*", "api*"]

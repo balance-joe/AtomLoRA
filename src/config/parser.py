@@ -53,16 +53,22 @@ class ConfigParser:
         return self.final_config
 
     def _resolve_abs_path(self, config_path: str) -> str:
-        if os.path.isabs(config_path): return config_path
-        # 优先查找 configs 根目录，其次查找 templates
-        abs_path = os.path.join(CONFIG_ROOT, config_path)
-        if not os.path.exists(abs_path):
-            # 尝试在 templates 下查找
-            abs_path_tpl = os.path.join(CONFIG_ROOT, "templates", config_path)
-            if os.path.exists(abs_path_tpl):
-                return abs_path_tpl
-            raise FileNotFoundError(f"Config file not found: {config_path}")
-        return abs_path
+        path = os.path.normpath(config_path)
+        # Case 1: absolute path → use directly
+        if os.path.isabs(path):
+            if os.path.exists(path):
+                return path
+            raise FileNotFoundError(f"Config file not found: {path}")
+        # Case 2: relative path → try CWD-based first
+        abs_path = os.path.abspath(path)
+        if os.path.exists(abs_path):
+            return abs_path
+        # Case 3: fall back to CONFIG_ROOT (handles templates/bert_lora_template.yaml etc.)
+        for base in (CONFIG_ROOT, os.path.join(CONFIG_ROOT, "templates")):
+            candidate = os.path.normpath(os.path.join(base, path))
+            if os.path.exists(candidate):
+                return candidate
+        raise FileNotFoundError(f"Config file not found: {os.path.abspath(path)}")
 
     def _load_single_config(self, config_path: str) -> Dict[str, Any]:
         if config_path in self.loaded_configs: return self.loaded_configs[config_path]
@@ -143,9 +149,10 @@ class ConfigParser:
         for field in REQUIRED_FIELDS["basic"]:
             if field not in self.final_config: raise ValueError(f"Missing {field}")
         
-        # 2. 检查 data.train_path (经过 normalize 后应该有了)
-        if "train_path" not in self.final_config.get("data", {}):
-             raise ValueError("Missing data.train_path (or data.raw_data_path)")
+        # 2. 检查数据路径 (经过 normalize 后应该有了)
+        for path_key in ["train_path", "dev_path"]:
+            if path_key not in self.final_config.get("data", {}):
+                raise ValueError(f"Missing data.{path_key}")
 
         # 3. 检查 label_mapping (经过 generate 后应该有了)
         if "label_mapping" not in self.final_config.get("data", {}):

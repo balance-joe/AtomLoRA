@@ -1,0 +1,68 @@
+# configs/demo.yaml
+# Demo 单分类任务配置
+
+exp_id: "demo_single_cls"
+description: "Demo 单标签分类"
+base_config: "templates/bert_lora_template.yaml"
+task_type: "single_cls"
+
+data:
+  train_path: "./data/raw/demo/demo_train.jsonl"
+  dev_path: "./data/raw/demo/demo_dev.jsonl"
+  test_path: "./data/raw/demo/demo_test.jsonl"
+  max_len: 256
+
+  text_col: "content"
+
+  label_col:
+    status: "status"
+
+  label_subset:
+    status: ["正确", "错误"]
+
+  label_mapping:
+    status: {0: "正确", 1: "错误"}
+
+tokenizer:
+  add_special_tokens: True
+  special_tokens:
+    - "[ERROR]"
+    - "[/ERROR]"
+    - "NOSUGGEST"
+
+model:
+  dropout: 0.15
+  freeze_bert: True
+  arch: "bert-base-chinese"                                 # 模型架构：使用BERT-base中文预训练模型
+  path: "./models/bert-base-chinese"                        # 模型路径：本地预训练模型文件位置
+
+  lora:
+    rank: 8
+    alpha: 16
+    dropout: 0.05
+    target_modules: ["self.query", "self.key", "self.value"]
+    bias: "none"
+
+train:
+  num_epochs: 3
+  batch_size: 20
+  gradient_accumulation_steps: 3
+  warmup_ratio: 0.1
+  monitor_interval: 50
+
+  early_stopping:
+    patience: 3
+    metric: "f1"
+
+  optimizer:
+    type: "AdamW"
+    groups:
+      bert: 2e-6
+      lora: 1.5e-4
+      classifier: 5e-4
+
+  scheduler_type: "cosine"
+
+resources:
+  priority: "medium"
+  gpus: "auto"

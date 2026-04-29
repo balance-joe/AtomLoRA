@@ -19,6 +19,10 @@
 
 ```
 AtomLoRA/
+├── atomlora/                      # CLI 包
+│   ├── __init__.py
+│   └── cli.py                    # 命令行入口 (atomlora train/eval/predict/serve)
+│
 ├── api/                          # FastAPI 应用层
 │   ├── app.py                    # REST API 端点定义
 │   ├── model_manager.py          # 模型管理和推理接口
@@ -33,37 +37,36 @@ AtomLoRA/
 ├── data/                         # 数据集存储
 │   └── raw/                      # 原始数据
 │
-├── models/                       # 预训练模型
-│   ├── bert-base-chinese/
-│   └── ernie-3.0-base-zh/
+├── docs/                         # 文档
+│   └── config_v1.md              # 配置文件规范
 │
 ├── src/                          # 核心代码
-│   ├── config/
-│   │   └── parser.py             # 配置解析器
+│   ├── config/parser.py          # 配置解析器
 │   ├── model/
 │   │   ├── model_factory.py      # 模型工厂（构建TaskTextClassifier）
-│   │   ├── lora_adapter.py       # LoRA适配器
 │   │   └── text_dataset.py       # 数据集和DataLoader
-│   ├── data/
-│   │   └── data_processor.py     # 数据预处理
+│   ├── data/data_processor.py    # 数据预处理
 │   ├── trainer/
 │   │   ├── train_engine.py       # 训练引擎
 │   │   └── metric_manager.py     # 评估指标管理
-│   ├── predict/
-│   │   └── predictor.py          # 推理预测
+│   ├── predict/predictor.py      # 推理预测
 │   └── utils/
-│       └── logger.py             # 日志系统
+│       ├── logger.py             # 日志系统
+│       └── paths.py              # 输出路径管理
 │
 ├── outputs/                      # 模型输出
 │   └── {exp_id}/
-│       ├── lora_adapter/         # LoRA权重
-│       ├── classifiers.pt        # 分类头权重
-│       └── tokenizer/            # 分词器
+│       ├── adapter/              # LoRA权重
+│       ├── classifier/           # 分类头权重
+│       ├── tokenizer/            # 分词器
+│       ├── config.yaml           # 训练配置副本
+│       └── metrics.json          # 最优评估指标
 │
 ├── logs/                         # 训练日志
-├── main.py                       # 训练入口
+├── main.py                       # 训练入口（兼容）
 ├── evaluator.py                  # 评估脚本
-├── predict.py                    # 推理脚本
+├── predict.py                    # 推理脚本（兼容）
+├── pyproject.toml                # 包配置
 └── requirements.txt              # 依赖包
 ```
 
@@ -71,111 +74,56 @@ AtomLoRA/
 
 ## 🚀 快速开始
 
-### 1. 环境配置
+### 1. 安装
 
 ```bash
-# 克隆仓库
 git clone https://github.com/balance-joe/AtomLoRA.git
 cd AtomLoRA
+pip install -e .
+```
 
-# 安装依赖
+### 2. 使用 Demo 数据训练
+
+项目内置了 demo 数据和配置，可直接运行验证：
+
+```bash
+atomlora train --config configs/demo.yaml
+```
+
+### 3. 评估模型
+
+```bash
+atomlora eval --config configs/demo.yaml
+```
+
+### 4. 单条预测
+
+```bash
+atomlora predict --config configs/demo.yaml --text "待预测的文本内容"
+```
+
+### 5. 启动 API 服务
+
+```bash
+atomlora serve --config configs/demo.yaml --port 8000
+```
+
+### 兼容方式（不安装包）
+
+```bash
 pip install -r requirements.txt
-
-# 主要依赖：
-# - transformers >= 4.25.0    # HuggingFace模型库
-# - peft >= 0.4.0             # LoRA框架
-# - torch >= 1.12.0           # 深度学习框架
-# - fastapi                   # Web API框架
+python main.py --config configs/demo.yaml           # 训练
+python main.py --config configs/demo.yaml --eval    # 评估
+python predict.py --config configs/demo.yaml --text "文本"  # 预测
 ```
 
-### 2. 数据准备
+### 自定义实验
 
-准备JSONL格式的数据集：
+1. 准备 JSONL 数据放在 `data/raw/` 目录下
+2. 参考 `configs/demo.yaml` 或 `docs/config_v1.md` 编写配置文件
+3. 运行 `atomlora train --config configs/my_experiment.yaml`
 
-```jsonl
-{"content": "样本文本", "label": 0}
-{"content": "样本文本", "label": 1}
-```
-
-将数据放在 `data/raw/` 目录下，如 `train_default.jsonl`。
-
-### 3. 配置实验
-
-查看 `configs/` 目录下的模板配置，创建自己的配置文件：
-
-```yaml
-# 示例：configs/my_experiment.yaml
-exp_id: "my_experiment"
-description: "我的分类实验"
-task_type: "single_cls"  # 或 "multi_cls"
-
-model:
-  arch: "bert-base-chinese"
-  path: "./models/bert-base-chinese"
-  freeze_bert: False
-  lora:
-    enabled: True
-    rank: 8           # LoRA秩大小
-    alpha: 16         # 缩放系数
-    dropout: 0.05
-    target_modules: ["query", "key", "value"]
-    bias: "none"
-
-data:
-  train_path: "./data/raw/train_default.jsonl"
-  dev_path: "./data/raw/dev_default.jsonl"
-  max_len: 256
-  label_col: "label"
-
-train:
-  num_epochs: 10
-  batch_size: 32
-  gradient_accumulation_steps: 2
-  warmup_ratio: 0.1
-  
-  optimizer:
-    type: "AdamW"
-    groups:
-      bert: 2e-6
-      lora: 1.5e-4
-      classifier: 5e-4
-```
-
-### 4. 开始训练
-
-```bash
-# 修改 main.py 中的配置路径，或直接运行
-python main.py
-
-# 输出目录：outputs/{exp_id}/
-# ├── lora_adapter/         # LoRA权重（可以转移到其他模型）
-# ├── classifiers.pt        # 分类头权重
-# ├── tokenizer/            # 分词器
-# └── logs/                 # 训练日志
-```
-
-### 5. 模型评估
-
-```bash
-python evaluator.py --config configs/my_experiment.yaml
-```
-
-### 6. 推理预测
-
-```bash
-python predict.py --config configs/my_experiment.yaml --text "待预测文本"
-```
-
-### 7. 启动API服务
-
-```bash
-# 安装FastAPI和Uvicorn
-pip install fastapi uvicorn
-
-# 启动服务（默认端口8000）
-uvicorn api.app:app --reload --host 0.0.0.0 --port 8000
-
-```
+配置文件规范详见 [docs/config_v1.md](docs/config_v1.md)。
 
 ---
 

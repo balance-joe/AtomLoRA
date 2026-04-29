@@ -9,4 +9,4 @@ CONFIGS_ROOT = os.path.join(PROJECT_ROOT, "configs")
 
 MODELS_ROOT = os.path.join(PROJECT_ROOT, "models")
 
-OUTPUTS_ROOT = os.path.join(PROJECT_ROOT, "models")
+OUTPUTS_ROOT = os.path.join(PROJECT_ROOT, "outputs")

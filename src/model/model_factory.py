@@ -6,6 +6,26 @@ from src.utils.logger import get_logger
 import os
 
 
+def _resolve_model_path(model_path: str, logger) -> str:
+    """判断 model_path 是本地目录还是 HuggingFace repo id，返回可用路径。"""
+    is_local_like = (
+        "/" in model_path
+        or "\\" in model_path
+        or model_path.startswith(".")
+    )
+    if is_local_like:
+        abs_path = os.path.abspath(model_path)
+        if os.path.isdir(abs_path):
+            logger.info(f"Loading local model from: {abs_path}")
+            return abs_path
+        raise FileNotFoundError(
+            f"Local model path not found: {abs_path}\n"
+            f"Either download the model locally, or use a HuggingFace repo id (e.g. bert-base-chinese)"
+        )
+    logger.info(f"Loading model from HuggingFace: {model_path}")
+    return model_path
+
+
 def load_tokenizer(config):
     """
     加载Tokenizer（适配配置中的特殊token+模型参数，修复add_special_tokens冲突）
@@ -17,12 +37,13 @@ def load_tokenizer(config):
     logger = get_logger(config["exp_id"])
 
     try:
+        resolved_path = _resolve_model_path(model_path, logger)
         # 基础Tokenizer加载
         tokenizer = AutoTokenizer.from_pretrained(
-            model_path,
+            resolved_path,
             do_lower_case=tokenizer_config.get("do_lower_case", True)  # 仅保留有效参数
         )
-        logger.info(f"Tokenizer加载成功：{model_arch} (路径：{model_path})")
+        logger.info(f"Tokenizer加载成功：{model_arch} (路径：{resolved_path})")
         
         # 加载自定义特殊token（通过tokenizer.add_special_tokens方法，与配置解耦）
         if tokenizer_config.get("add_special_tokens", True) and "special_tokens" in tokenizer_config:
@@ -56,10 +77,11 @@ class TaskTextClassifier(nn.Module):
         
         model_arch = config["model"]["arch"]
         model_path = config["model"].get("path", model_arch)
+        resolved_path = _resolve_model_path(model_path, self.logger)
 
         # 1. 使用AutoModel 加载基础BERT模型
         self.bert = AutoModel.from_pretrained(
-            model_path,
+            resolved_path,
             output_hidden_states=True  # 确保输出隐藏状态
         )
         
@@ -118,14 +140,11 @@ class TaskTextClassifier(nn.Module):
         else:
             # 多任务：从label_col的键获取任务名称
             label_col_config = self.config["data"]["label_col"]
-            if isinstance(label_col_config, dict):
-                task_names = list(label_col_config.keys())
-                # 从label_mapping获取对应的标签映射
-                label_mapping_config = self.config["data"]["label_mapping"]
-                mappings = {task: label_mapping_config[task] for task in task_names}
-            else:
-                # 回退到旧逻辑
-                mappings = self.config["data"]["label_maps"]
+            if not isinstance(label_col_config, dict):
+                raise ValueError("multi_cls 任务要求 data.label_col 为字典 (task_name -> col_name)")
+            task_names = list(label_col_config.keys())
+            label_mapping_config = self.config["data"]["label_mapping"]
+            mappings = {task: label_mapping_config[task] for task in task_names}
 
         classifiers = nn.ModuleDict()
 
@@ -165,11 +184,9 @@ class TaskTextClassifier(nn.Module):
         else:
             # 直接从label_col的键获取任务名称
             label_col_config = self.config["data"]["label_col"]
-            if isinstance(label_col_config, dict):
-                task_names = list(label_col_config.keys())
-            else:
-                # 回退逻辑
-                task_names = ["misreport", "risk"]  # 默认值
+            if not isinstance(label_col_config, dict):
+                raise ValueError("multi_cls 任务要求 data.label_col 为字典 (task_name -> col_name)")
+            task_names = list(label_col_config.keys())
         
         loss_weights = self.config["train"].get("loss_weight", [1.0] * len(task_names))
         

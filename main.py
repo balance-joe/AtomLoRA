@@ -2,6 +2,12 @@ import sys
 import os
 import argparse
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 from evaluator import Evaluator
 from src.model.text_dataset import create_dataloader
 # 添加路径
@@ -65,12 +71,12 @@ def evaluate(config_path):
     print(metrics)
 
 if __name__ == "__main__":
-    # 可以用 argparse，这里为了简便直接调用
-    # 请确保 yaml 文件路径正确
-    # main(r"/home/czyun/AtomLoRA/configs/bert_yq_class_0.1.yaml")
-    # main(r"/home/czyun/AtomLoRA/configs/ernie_yq_class_0.1.yaml")
-    # main(r"/home/czyun/AtomLoRA/configs/macbert_yq_class_0.1.yaml")
-    # main(r"/home/czyun/AtomLoRA/configs/macbert_yq_class_0.2.yaml")
-    # evaluate(r"D:\python\AtomLoRA\configs\ernie_yq_class_0.1.yaml")
-    # main(r"D:\python\AtomLoRA\configs\macbert_yq_class_0.2.yaml")
-    main(r"/home/czyun/AtomLoRA/configs/macbert_wubao_1.0.yaml")
+    parser = argparse.ArgumentParser(description="AtomLoRA 训练入口")
+    parser.add_argument("--config", type=str, required=True, help="YAML 配置文件路径")
+    parser.add_argument("--eval", action="store_true", help="仅运行评估，不训练")
+    args = parser.parse_args()
+
+    if args.eval:
+        evaluate(args.config)
+    else:
+        main(args.config)

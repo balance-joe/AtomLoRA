@@ -8,6 +8,7 @@ from src.trainer.metric_manager import MetricManager
 from src.model.model_factory import TaskTextClassifier
 from src.data.data_processor import load_dataset
 from src.model.text_dataset import create_dataloader
+from src.utils.paths import resolve_adapter_path, resolve_classifier_path, resolve_tokenizer_path
 
 
 class Evaluator:
@@ -19,9 +20,9 @@ class Evaluator:
         self.metric_manager = MetricManager(config)
 
         self.output_dir = os.path.join("outputs", config["exp_id"])
-        self.lora_path = os.path.join(self.output_dir, "lora_adapter")
-        self.clf_path = os.path.join(self.output_dir, "classifiers.pt")
-        self.tokenizer_path = os.path.join(self.output_dir, "tokenizer")
+        self.lora_path = resolve_adapter_path(self.output_dir)
+        self.clf_path = resolve_classifier_path(self.output_dir)
+        self.tokenizer_path = resolve_tokenizer_path(self.output_dir)
 
         self._load_tokenizer()
         self._load_model()
@@ -77,10 +78,9 @@ class Evaluator:
                 single_task_key = label_col_config
         else:
             label_col_config = self.config["data"]["label_col"]
-            if isinstance(label_col_config, dict):
-                task_names = list(label_col_config.keys())
-            else:
-                task_names = ["misreport", "risk"]
+            if not isinstance(label_col_config, dict):
+                raise ValueError("multi_cls 任务要求 data.label_col 为字典")
+            task_names = list(label_col_config.keys())
 
         # 初始化容器
         for t in task_names:
