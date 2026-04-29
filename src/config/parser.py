@@ -130,19 +130,19 @@ class ConfigParser:
         subset = data["label_subset"]
 
         if task_type == "single_cls":
-            # 单任务：生成 {task_name: {int: str}} 格式
+            # 单任务：统一生成 {task_name: {int: str}} 嵌套格式
             if isinstance(subset, list):
-                # label_subset: ["正确", "错误"] → label_mapping: {0: "正确", 1: "错误"}
                 mapping = {idx: label for idx, label in enumerate(subset)}
-                # 取 label_col 的第一个 task_name 作为 key
+                # 从 label_col 取 task_name，保证嵌套结构
                 label_col = data.get("label_col", {})
                 if isinstance(label_col, dict):
                     task_name = next(iter(label_col.keys()))
-                    data["label_mapping"] = {task_name: mapping}
                 else:
-                    data["label_mapping"] = mapping
+                    # label_col 是字符串时，用 label_mapping 或固定 "default"
+                    task_name = next(iter(data.get("label_mapping", {}).keys()), "default") \
+                        if "label_mapping" in data else "default"
+                data["label_mapping"] = {task_name: mapping}
             elif isinstance(subset, dict):
-                # label_subset: {status: ["正确", "错误"]} → label_mapping: {status: {0: "正确", 1: "错误"}}
                 data["label_mapping"] = {
                     task_name: {idx: label for idx, label in enumerate(labels)}
                     for task_name, labels in subset.items()

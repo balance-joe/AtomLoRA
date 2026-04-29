@@ -131,13 +131,16 @@ class TaskTextClassifier(nn.Module):
         
         # 从label_col获取任务名称
         if self.task_type == "single_cls":
-            # 1. 获取label_mapping配置（是字典，如{'misreport': {0:..., 1:...}}）
             label_mapping_config = self.config["data"]["label_mapping"]
-            # 2. 动态取第一个任务的键（不管是misreport还是其他）
-            first_task_key = next(iter(label_mapping_config.keys()))  # 拿到'misreport'
-            # 3. 取第一个任务的标签映射（{0: '非误报', 1: '误报'}）
+            first_task_key = next(iter(label_mapping_config.keys()))
             first_task_label_map = label_mapping_config[first_task_key]
-            # 4. 构建mappings（default对应正确的标签映射）
+            # 防御：first_task_label_map 必须是 {int: str} 字典，不能是字符串
+            if not isinstance(first_task_label_map, dict):
+                raise ValueError(
+                    f"[MODEL] label_mapping 结构错误：single_cls 下期望 {{task_name: {{int: str}}}}，"
+                    f"但 key='{first_task_key}' 的值是 {type(first_task_label_map).__name__}。"
+                    f"请检查 data.label_mapping 配置。"
+                )
             mappings = {"default": first_task_label_map}
         else:
             # 多任务：从label_col的键获取任务名称

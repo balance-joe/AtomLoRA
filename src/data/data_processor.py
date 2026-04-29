@@ -23,8 +23,13 @@ def load_dataset(config, path, tokenizer):
     # 从配置提取核心字段（完全配置驱动）
     data_config = config["data"]
     text_col = data_config["text_col"]  # 文本字段名（如"text"）
-    label_col_map = data_config["label_col"]  # 任务-标签字段映射（如{"misreport": "mis_label", "risk": "risk_label"}）
-    label_mapping = data_config["label_mapping"]  # 标签-ID映射（如{"misreport": {"非误报":0, "误报":1}}）
+    label_col_map = data_config["label_col"]  # 任务-标签字段映射
+    label_mapping = data_config["label_mapping"]  # 标签-ID映射
+
+    # 归一化：single_cls 下 label_col 可能是字符串，统一转为 dict
+    if isinstance(label_col_map, str):
+        task_name = next(iter(label_mapping.keys()))
+        label_col_map = {task_name: label_col_map}
     
     reversed_label_mapping = {}
     for task_name, mapping in label_mapping.items():
