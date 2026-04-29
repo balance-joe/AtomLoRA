@@ -8,14 +8,15 @@ if hasattr(sys.stdout, 'reconfigure'):
         sys.stderr.reconfigure(encoding='utf-8')
     except Exception:
         pass
-from tqdm import tqdm
 from peft import PeftModel
 from transformers import AutoTokenizer, AutoModel
 from src.utils.logger import get_logger
+from src.utils.device import resolve_device
 from src.trainer.metric_manager import MetricManager
-from src.model.model_factory import TaskTextClassifier
+from src.model.model_factory import TaskTextClassifier, _resolve_model_path
 from src.data.data_processor import load_dataset
 from src.model.text_dataset import create_dataloader
+from src.eval.runner import run_evaluation
 from src.utils.paths import resolve_adapter_path, resolve_classifier_path, resolve_tokenizer_path
 
 
@@ -23,7 +24,7 @@ class Evaluator:
     def __init__(self, config):
         self.config = config
         self.logger = get_logger(config["exp_id"])
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = resolve_device(config)
 
         self.metric_manager = MetricManager(config)
 
@@ -42,9 +43,10 @@ class Evaluator:
     def _load_model(self):
         model_arch = self.config["model"]["arch"]
         model_path = self.config["model"].get("path", model_arch)
+        resolved_path = _resolve_model_path(model_path, self.logger)
 
         base_model = AutoModel.from_pretrained(
-            model_path,
+            resolved_path,
             output_hidden_states=True
         )
 
@@ -52,13 +54,12 @@ class Evaluator:
         if len(self.tokenizer) > base_model.config.vocab_size:
             base_model.resize_token_embeddings(len(self.tokenizer))
 
-        self.bert = PeftModel.from_pretrained(
-            base_model,
-            self.lora_path
-        )
-
-        self.model = TaskTextClassifier(self.config, self.tokenizer)
-        self.model.bert = self.bert
+        lora_enabled = self.config["model"].get("lora", {}).get("enabled", True)
+        if lora_enabled:
+            self.bert = PeftModel.from_pretrained(base_model, self.lora_path)
+        else:
+            self.bert = base_model
+        self.model = TaskTextClassifier(self.config, self.tokenizer, backbone=self.bert)
 
         self.model.classifiers.load_state_dict(
             torch.load(self.clf_path, map_location="cpu")
@@ -70,67 +71,15 @@ class Evaluator:
         self.logger.info("Model + LoRA + classifier loaded")
 
     def evaluate(self, data_path):
+        if not data_path:
+            raise ValueError("评估缺少 data_path，请在配置中提供 data.dev_path 或显式传入路径")
         data = load_dataset(self.config, data_path, self.tokenizer)
         loader = create_dataloader(
             data,
             batch_size=self.config["train"]["batch_size"],
             shuffle=False
         )
-
-        all_logits, all_labels = {}, {}
-
-        # ========== 完全对齐训练代码的task_names逻辑 ==========
-        if self.config["task_type"] == "single_cls":
-            task_names = ["default"]  # 模型输出键固定为default
-            # 提取配置里的实际标签键（你的是class）
-            label_col_config = self.config["data"]["label_col"]
-            if isinstance(label_col_config, dict):
-                single_task_key = next(iter(label_col_config.keys()))  # 拿到class
-            else:
-                single_task_key = label_col_config
-        else:
-            label_col_config = self.config["data"]["label_col"]
-            if not isinstance(label_col_config, dict):
-                raise ValueError("multi_cls 任务要求 data.label_col 为字典")
-            task_names = list(label_col_config.keys())
-
-        # 初始化容器
-        for t in task_names:
-            all_logits[t] = []
-            all_labels[t] = []
-
-        with torch.no_grad():
-            for batch in tqdm(loader, desc="Evaluating"):
-                input_ids = batch["input_ids"].to(self.device)
-                mask = batch["attention_mask"].to(self.device)
-                labels = batch["labels"]
-
-                outputs = self.model(input_ids, mask, labels=None)
-
-                # ========== 完全对齐训练代码的取值逻辑 ==========
-                for t in task_names:
-                    if self.config["task_type"] == "single_cls":
-                        # 取模型输出：优先default键，非字典则取整个outputs
-                        logit = outputs.get("default", outputs) if isinstance(outputs, dict) else outputs
-                        # 取标签：用single_task_key（class）从labels字典取值
-                        if isinstance(labels, dict):
-                            label = labels[single_task_key]
-                        else:
-                            label = labels
-                    else:
-                        logit = outputs[t]
-                        label = labels[t]
-
-                    all_logits[t].append(logit.cpu())
-                    all_labels[t].append(label.cpu())
-
-        # 拼接结果
-        for t in task_names:
-            all_logits[t] = torch.cat(all_logits[t], dim=0)
-            all_labels[t] = torch.cat(all_labels[t], dim=0)
-
-        # 验证 logits/labels 一致性
-        self.metric_manager.validate_inputs(all_logits, all_labels)
-
-        metrics = self.metric_manager.compute(all_logits, all_labels)
-        return metrics
+        return run_evaluation(
+            self.model, loader, self.config,
+            self.metric_manager, self.device, desc="Evaluating"
+        )

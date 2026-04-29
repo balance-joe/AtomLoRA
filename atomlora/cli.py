@@ -12,37 +12,22 @@ if hasattr(sys.stdout, 'reconfigure'):
         pass
 
 
-def _resolve_config(config_path: str) -> str:
-    """Resolve --config argument. Supports 'latest' shorthand."""
-    if config_path == "latest":
-        resolved = os.path.join("outputs", "latest", "config.yaml")
-        if not os.path.exists(resolved):
-            raise FileNotFoundError(
-                "outputs/latest/config.yaml 不存在。请先运行一次训练。"
-            )
-        return resolved
-    return config_path
-
-
 def cmd_train(args):
-    args.config = _resolve_config(args.config)
     from atomlora.engine import main
     main(args.config)
 
 
 def cmd_eval(args):
-    args.config = _resolve_config(args.config)
     from atomlora.engine import evaluate
-    evaluate(args.config)
+    evaluate(args.config, data_path=args.data_path)
 
 
 def cmd_predict(args):
-    args.config = _resolve_config(args.config)
     from src.config.parser import parse_config
     from src.utils.logger import init_logger
     from src.predict.predictor import TextAuditPredictor
 
-    config = parse_config(args.config)
+    config = parse_config(args.config, mode="predict")
     init_logger(config["exp_id"], config["task_type"])
 
     predictor = TextAuditPredictor(config=config)
@@ -52,13 +37,13 @@ def cmd_predict(args):
     predictor.close()
 
 
-# 常见错误的用户友好提示
+# 常见错误的用户友好提示（key 精确匹配异常类型名）
 _ERROR_HINTS = {
     "FileNotFoundError": "文件不存在。请检查配置中的路径是否正确，模型是否已下载。",
-    "RuntimeError:CUDA": "GPU 显存不足。尝试减小 batch_size 或用 CPU 模式。",
-    "KeyError:label": "标签映射错误。请检查 label_col / label_mapping 配置是否与数据匹配。",
+    "RuntimeError": "运行时错误。如果涉及 CUDA，尝试减小 batch_size 或用 CPU 模式。",
+    "KeyError": "键错误。请检查配置中的字段名是否正确（如 label_col / label_mapping）。",
     "ModuleNotFoundError": "缺少依赖包。运行 pip install -r requirements.txt 或 bash install.sh。",
-    "No such file": "配置文件不存在。请检查 --config 参数路径。",
+    "ValueError": "值错误。请检查配置文件中的参数类型和取值范围。",
 }
 
 
@@ -70,11 +55,10 @@ def _friendly_error(e: Exception, config_path: str = None):
     print(f"\n{'='*50}")
     print(f"[ERROR] {err_type}: {err_msg}")
 
-    # 匹配提示
-    for key, hint in _ERROR_HINTS.items():
-        if key.lower() in (err_type + err_msg).lower():
-            print(f"[HINT] {hint}")
-            break
+    # 按异常类型名精确匹配提示
+    hint = _ERROR_HINTS.get(err_type)
+    if hint:
+        print(f"[HINT] {hint}")
 
     if config_path:
         print(f"[INFO] 配置文件: {config_path}")
@@ -82,10 +66,16 @@ def _friendly_error(e: Exception, config_path: str = None):
 
 
 def cmd_serve(args):
-    args.config = _resolve_config(args.config)
     import uvicorn
-    # 传递配置文件路径，让 API 服务直接加载指定配置
-    os.environ["ATOMLORA_SERVE_CONFIG"] = os.path.abspath(args.config)
+    from src.config.parser import parse_config, resolve_runtime_config_path
+    from src.utils.device import resolve_device
+
+    config = parse_config(args.config, mode="serve")
+    device = resolve_device(config)
+    if args.reload and device.type == "cuda":
+        raise ValueError("GPU 推理服务不支持 --reload，请使用单进程模式启动。")
+
+    os.environ["ATOMLORA_SERVE_CONFIG"] = resolve_runtime_config_path(args.config, mode="serve")
     uvicorn.run("api.app:app", host=args.host, port=args.port, reload=args.reload)
 
 
@@ -104,6 +94,7 @@ def main():
     # eval
     p_eval = sub.add_parser("eval", help="Evaluate a trained model")
     p_eval.add_argument("--config", required=True, help="YAML config path")
+    p_eval.add_argument("--data-path", help="Optional evaluation dataset path")
     p_eval.set_defaults(func=cmd_eval)
 
     # predict

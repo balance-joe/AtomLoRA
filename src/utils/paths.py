@@ -105,10 +105,11 @@ def update_latest_link(exp_dir, metrics=None, config_path=None):
     if os.name == "nt":
         try:
             import subprocess
+            abs_link = os.path.abspath(link_path)
+            abs_target = os.path.abspath(exp_dir)
             subprocess.run(
-                ["cmd", "/c", "mklink", "/J",
-                 os.path.abspath(link_path), os.path.abspath(exp_dir)],
-                check=True, capture_output=True
+                f'cmd /c mklink /J "{abs_link}" "{abs_target}"',
+                check=True, capture_output=True, shell=True
             )
             return
         except (subprocess.CalledProcessError, FileNotFoundError):

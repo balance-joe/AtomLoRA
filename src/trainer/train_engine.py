@@ -1,11 +1,14 @@
 import os
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-from transformers import get_linear_schedule_with_warmup
+from transformers import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
 from src.utils.logger import get_logger
+from src.utils.device import resolve_device
 from src.trainer.metric_manager import MetricManager
+from src.eval.runner import run_evaluation
 from src.utils.paths import (
     ADAPTER_DIR, CLASSIFIER_DIR, TOKENIZER_DIR, CLASSIFIER_FILE, CONFIG_FILE,
     copy_config_to_output, save_metrics, update_latest_link
@@ -20,7 +23,7 @@ class Trainer:
         self.dev_loader = dev_loader
         self.tokenizer = tokenizer # 需要保存 tokenizer
         
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = resolve_device(config)
         self.model.to(self.device)
         
         # 输出路径
@@ -75,49 +78,71 @@ class Trainer:
                 "weight_decay": 0.001
             })
             
+        summary = self.model.get_trainable_parameter_summary()
+        trainable_pct = (summary["trainable"] / summary["all"] * 100.0) if summary["all"] else 0.0
+        self.logger.info(
+            "可训练参数: backbone=%d | lora=%d | classifier=%d | total_trainable=%d / all=%d (%.4f%%)",
+            summary["backbone"],
+            summary["lora"],
+            summary["classifier"],
+            summary["trainable"],
+            summary["all"],
+            trainable_pct,
+        )
         self.logger.info(f"优化器组: LoRA({len(lora_params)}), Clf({len(classifier_params)}), Bert({len(bert_params)})")
         return torch.optim.AdamW(optimizer_grouped_parameters)
 
     def _build_scheduler(self):
         num_epochs = self.config["train"]["num_epochs"]
         grad_accum = self.config["train"].get("gradient_accumulation_steps", 1)
-        total_steps = len(self.train_loader) * num_epochs // grad_accum
+        steps_per_epoch = math.ceil(len(self.train_loader) / grad_accum)
+        total_steps = steps_per_epoch * num_epochs
         warmup_ratio = self.config["train"].get("warmup_ratio", 0.1)
+        scheduler_type = self.config["train"].get("scheduler_type", "linear")
+        num_warmup_steps = int(total_steps * warmup_ratio)
 
+        if scheduler_type == "cosine":
+            return get_cosine_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=total_steps,
+            )
         return get_linear_schedule_with_warmup(
             self.optimizer,
-            num_warmup_steps=int(total_steps * warmup_ratio),
-            num_training_steps=total_steps
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=total_steps,
         )
 
     def _log_training_monitor(self, step, logits_dict, labels):
         """定期打印训练过程中的置信度和 LoRA 权重状态，辅助调试"""
         self.model.eval()
-        with torch.no_grad():
-            for task_name, logits in logits_dict.items():
-                probs = F.softmax(logits.detach(), dim=-1)
-                max_probs = probs.max(dim=-1).values
-                mean_conf = max_probs.mean().item()
+        try:
+            with torch.no_grad():
+                for task_name, logits in logits_dict.items():
+                    probs = F.softmax(logits.detach(), dim=-1)
+                    max_probs = probs.max(dim=-1).values
+                    mean_conf = max_probs.mean().item()
 
-                preds = probs.argmax(dim=-1)
-                if isinstance(labels, dict):
-                    true_labels = labels.get(task_name, next(iter(labels.values())))
-                else:
-                    true_labels = labels
-                train_acc = (preds == true_labels).float().mean().item()
+                    preds = probs.argmax(dim=-1)
+                    if isinstance(labels, dict):
+                        true_labels = labels.get(task_name, next(iter(labels.values())))
+                    else:
+                        true_labels = labels
+                    train_acc = (preds == true_labels).float().mean().item()
 
-                self.logger.info(
-                    f"📊 Step {step} | {task_name} | "
-                    f"置信度: {mean_conf:.4f} | 训练准确率: {train_acc:.4f}"
-                )
+                    self.logger.info(
+                        f"📊 Step {step} | {task_name} | "
+                        f"置信度: {mean_conf:.4f} | 训练准确率: {train_acc:.4f}"
+                    )
 
-        # LoRA 权重健康检查
-        for name, param in self.model.bert.named_parameters():
-            if "lora_B" in name and param.requires_grad:
-                lora_b_mean = torch.mean(param.data).item()
-                self.logger.info(f"📌 Step {step} | {name} 均值: {lora_b_mean:.6f}")
-                break
-        self.model.train()
+            # LoRA 权重健康检查
+            for name, param in self.model.bert.named_parameters():
+                if "lora_B" in name and param.requires_grad:
+                    lora_b_mean = torch.mean(param.data).item()
+                    self.logger.info(f"📌 Step {step} | {name} 均值: {lora_b_mean:.6f}")
+                    break
+        finally:
+            self.model.train()
 
     def train(self):
         epochs = self.config["train"]["num_epochs"]
@@ -126,6 +151,10 @@ class Trainer:
         best_metrics = {}
         global_step = 0
         monitor_interval = self.config["train"].get("monitor_interval", 100)
+        early_stopping = self.config["train"].get("early_stopping", {})
+        patience = early_stopping.get("patience")
+        monitor_metric = early_stopping.get("metric", "main_score")
+        epochs_without_improvement = 0
 
         self.logger.info("开始训练...")
 
@@ -175,19 +204,36 @@ class Trainer:
                     global_step += 1
 
                 pbar.set_postfix({"loss": f"{loss.item() * grad_accum:.4f}"})
-            
+
+            # 处理 epoch 末尾不足一个累积窗口的残余梯度
+            if (step + 1) % grad_accum != 0:
+                self.optimizer.step()
+                self.scheduler.step()
+                self.optimizer.zero_grad()
+
             # 评估
             metrics = self.evaluate()
             log_msg = f"Epoch {epoch} | " + " | ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
             self.logger.info(log_msg)
             
             # 保存最优模型
-            current_score = metrics.get("main_score", 0)
+            current_score = metrics.get(monitor_metric, metrics["main_score"])
             if current_score > best_score:
                 best_score = current_score
                 best_metrics = metrics
+                epochs_without_improvement = 0
                 self.save_model()
                 self.logger.info(f">>> 新模型诞生! 分数: {best_score:.4f}")
+            else:
+                epochs_without_improvement += 1
+                if patience and epochs_without_improvement >= patience:
+                    self.logger.info(
+                        "早停触发: metric=%s patience=%d best=%.4f",
+                        monitor_metric,
+                        patience,
+                        best_score,
+                    )
+                    break
 
         # 训练结束后保存最优指标
         save_metrics(best_metrics, self.output_dir)
@@ -199,58 +245,10 @@ class Trainer:
         self.logger.info(f"✅ outputs/latest -> {self.output_dir}")
 
     def evaluate(self):
-        self.model.eval()
-        all_logits = {}
-        all_labels = {}
-        
-        # 关键修改：从label_col获取任务名称
-        if self.config["task_type"] == "single_cls":
-            task_names = ["default"]
-            # 获取单任务的标签键（比如'misreport'）
-            label_col_config = self.config["data"]["label_col"]
-            if isinstance(label_col_config, dict):
-                single_task_key = next(iter(label_col_config.keys()))  # 拿到'标签'
-            else:
-                single_task_key = label_col_config
-        else:
-            label_col_config = self.config["data"]["label_col"]
-            if not isinstance(label_col_config, dict):
-                raise ValueError("multi_cls 任务要求 data.label_col 为字典")
-            task_names = list(label_col_config.keys())
-
-        for t in task_names:
-            all_logits[t] = []
-            all_labels[t] = []
-            
-        with torch.no_grad():
-            for batch in self.dev_loader:
-                input_ids = batch["input_ids"].to(self.device)
-                mask = batch["attention_mask"].to(self.device)
-                labels = batch["labels"]
-                
-                outputs = self.model(input_ids, mask, labels=None)
-                
-                for t in task_names:
-                    if self.config["task_type"] == "single_cls":
-                        logit = outputs.get("default", outputs) if isinstance(outputs, dict) else outputs
-                        # 处理字典格式的labels
-                        if isinstance(labels, dict):
-                            label = labels[single_task_key]  # 提取张量（如labels['misreport']）
-                        else:
-                            label = labels
-                    else:
-                        logit = outputs[t]
-                        label = labels[t]
-                        
-                    all_logits[t].append(logit.cpu())
-                    all_labels[t].append(label.cpu())  # 现在label是张量，可调用cpu()
-
-        for t in task_names:
-            all_logits[t] = torch.cat(all_logits[t], dim=0)
-            all_labels[t] = torch.cat(all_labels[t], dim=0)
-
-        self.metric_manager.validate_inputs(all_logits, all_labels)
-        return self.metric_manager.compute(all_logits, all_labels)
+        return run_evaluation(
+            self.model, self.dev_loader, self.config,
+            self.metric_manager, self.device, show_progress=False
+        )
 
     
     def save_model(self):

@@ -1,12 +1,11 @@
 import json
 import os
+from contextlib import asynccontextmanager
 from threading import Lock
 from fastapi import FastAPI, Request
 
 from api.model_manager import ModelManager
 from api.util import success, error
-
-app = FastAPI(title="Ai模型主页")
 
 model_manager = ModelManager()
 # 注意：当前仅支持单 worker 模式（uvicorn 默认就是单 worker）
@@ -14,14 +13,13 @@ model_manager = ModelManager()
 gpu_lock = Lock()
 
 
-@app.on_event("startup")
-def startup_event():
-    # 优先从 ATOMLORA_SERVE_CONFIG 加载（CLI 传入的配置路径）
+def _load_default_model():
+    """启动时加载默认模型（在 gpu_lock 内调用）。"""
     serve_config = os.environ.get("ATOMLORA_SERVE_CONFIG")
     if serve_config:
         try:
             from src.config.parser import parse_config
-            config = parse_config(serve_config)
+            config = parse_config(serve_config, mode="serve")
             model_name = config["exp_id"]
             with gpu_lock:
                 model_manager.load_model(model_name, config_path=serve_config)
@@ -33,7 +31,6 @@ def startup_event():
             print(f"[ERROR] 默认模型加载失败: {type(e).__name__}: {e}")
         return
 
-    # 回退：从环境变量指定的模型名加载
     default_model = os.environ.get("ATOMLORA_DEFAULT_MODEL")
     if not default_model:
         print("未设置默认模型（通过 atomlora serve --config 或 ATOMLORA_DEFAULT_MODEL 环境变量指定）")
@@ -46,9 +43,43 @@ def startup_event():
         print(f"默认模型加载失败: {e}")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _load_default_model()
+    yield
+
+
+app = FastAPI(title="Ai模型主页", lifespan=lifespan)
+
+
 @app.get("/index")
 def index():
     return success()
+
+
+@app.post("/load")
+async def load_model(request: Request):
+    """显式加载指定模型"""
+    try:
+        body = await request.json()
+    except Exception:
+        return error("请求体必须是合法的 JSON")
+
+    config_path = body.get("config_path")
+    if not config_path:
+        return error("config_path 必填")
+
+    try:
+        from src.config.parser import parse_config
+        config = parse_config(config_path, mode="serve")
+        model_name = config["exp_id"]
+        with gpu_lock:
+            model_manager.load_model(model_name, config_path=config_path)
+        return success(msg=f"模型已加载: {model_name}")
+    except FileNotFoundError as e:
+        return error(f"模型或配置文件不存在: {e}")
+    except Exception as e:
+        return error(f"{type(e).__name__}: {e}")
 
 
 @app.post("/predict")
@@ -67,11 +98,11 @@ async def predict(request: Request):
     if not sample or not isinstance(sample, dict):
         return error("sample 必填且必须是对象")
 
-    content = sample.get("content")
-    if not content or not isinstance(content, str):
-        return error("sample.content 必填且必须是字符串")
-
     try:
+        text_col = model_manager.get_text_col(model_name)
+        content = sample.get(text_col)
+        if not content or not isinstance(content, str):
+            return error(f"sample.{text_col} 必填且必须是字符串")
         with gpu_lock:
             result = model_manager.predict(
                 model_name=model_name,
@@ -82,7 +113,6 @@ async def predict(request: Request):
     except Exception as e:
         return error(f"{type(e).__name__}: {e}")
 
-    # 保持你原来的输出格式
     result = json.loads(json.dumps(result, ensure_ascii=False, indent=2))
     return success(data=result)
 

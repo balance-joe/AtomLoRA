@@ -23,8 +23,13 @@ def load_dataset(config, path, tokenizer):
     # 从配置提取核心字段（完全配置驱动）
     data_config = config["data"]
     text_col = data_config["text_col"]  # 文本字段名（如"text"）
-    label_col_map = data_config["label_col"]  # 任务-标签字段映射（如{"misreport": "mis_label", "risk": "risk_label"}）
-    label_mapping = data_config["label_mapping"]  # 标签-ID映射（如{"misreport": {"非误报":0, "误报":1}}）
+    label_col_map = data_config["label_col"]  # 任务-标签字段映射
+    label_mapping = data_config["label_mapping"]  # 标签-ID映射
+
+    # 归一化：single_cls 下 label_col 可能是字符串，统一转为 dict
+    if isinstance(label_col_map, str):
+        task_name = next(iter(label_mapping.keys()))
+        label_col_map = {task_name: label_col_map}
     
     reversed_label_mapping = {}
     for task_name, mapping in label_mapping.items():
@@ -53,13 +58,12 @@ def load_dataset(config, path, tokenizer):
                 logger.warning(f"第{line_idx+1}行文本字段[{text_col}]为空，跳过")
                 continue
 
-            # 2. Tokenize文本（通用处理）
+            # 2. Tokenize文本（通用处理，直接返回 list 避免 tensor→list 转换开销）
             encoded_input = tokenizer(
                 text=text,
                 padding="max_length",
                 truncation=True,
                 max_length=data_config["max_len"],
-                return_tensors="pt",
                 return_attention_mask=True,
             )
 
@@ -101,11 +105,12 @@ def load_dataset(config, path, tokenizer):
                 continue
 
             # 4. 标准化样本输出
+            attn_mask = encoded_input["attention_mask"]
             sample = {
-                "input_ids": encoded_input["input_ids"].squeeze(0).tolist(),
-                "attention_mask": encoded_input["attention_mask"].squeeze(0).tolist(),
+                "input_ids": encoded_input["input_ids"],
+                "attention_mask": attn_mask,
                 "labels": labels,
-                "seq_len": int(encoded_input["attention_mask"].sum().item()),
+                "seq_len": sum(attn_mask),
                 "raw_text": text  # 保留原始文本用于调试
             }
             contents.append(sample)

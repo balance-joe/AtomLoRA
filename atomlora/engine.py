@@ -24,7 +24,7 @@ from src.trainer.train_engine import Trainer
 
 def main(config_path):
     # 1. Config
-    config = parse_config(config_path)
+    config = parse_config(config_path, mode="train")
     exp_id = config["exp_id"]
     logger = init_logger(exp_id, config["task_type"])
 
@@ -60,12 +60,12 @@ def main(config_path):
     trainer.train()
 
 
-def evaluate(config_path):
-    config = parse_config(config_path)
+def evaluate(config_path, data_path=None):
+    config = parse_config(config_path, mode="eval", eval_data_path=data_path)
     exp_id = config["exp_id"]
     logger = init_logger(exp_id, config["task_type"])
 
     logger.info(f"加载配置，文件是 {config_path}")
     evaluator = Evaluator(config)
-    metrics = evaluator.evaluate(config["data"]["dev_path"])
+    metrics = evaluator.evaluate(data_path or config["data"].get("dev_path"))
     print(metrics)

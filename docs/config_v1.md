@@ -1,6 +1,7 @@
 # AtomLoRA Configuration Specification (v1)
 
 All behavior is driven by a single YAML config file. Configs support **inheritance** via `base_config`.
+For trained experiments, `eval / predict / serve` prefer `outputs/{exp_id}/config.yaml` as the source of truth for model semantics.
 
 ## Quick Example
 
@@ -131,7 +132,7 @@ label_mapping:
 | `loss_weight` | list | no | Per-task loss weights for multi_cls (e.g. `[1.0, 1.2]`). |
 | `scheduler_type` | string | no | LR scheduler: `"linear"` or `"cosine"` (default: `"linear"`). |
 | `early_stopping.patience` | int | no | Stop after N epochs without improvement. |
-| `early_stopping.metric` | string | no | Metric to monitor: `"f1"` or `"acc"`. |
+| `early_stopping.metric` | string | no | Metric to monitor. Defaults to `main_score` when omitted. |
 
 #### train.optimizer
 
@@ -146,8 +147,8 @@ label_mapping:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `priority` | string | no | Task priority: `"low"`, `"medium"`, `"high"` (for scheduling). |
-| `gpus` | string | no | GPU selection: `"auto"` or specific device (e.g. `"cuda:0"`). |
+| `priority` | string | no | Optional metadata only. |
+| `gpus` | string | no | Device selection: `"auto"`, `"cpu"`, or a specific CUDA device such as `"cuda:0"`. |
 
 ---
 
@@ -185,3 +186,9 @@ outputs/{exp_id}/
 ├── config.yaml           # Copy of training config
 └── metrics.json          # Best evaluation metrics
 ```
+
+## Runtime Notes
+
+- `atomlora eval`, `atomlora predict`, and `atomlora serve` prefer the saved `outputs/{exp_id}/config.yaml` over the current external config file.
+- `--config latest` supports both `outputs/latest/config.yaml` and the fallback pointer file `outputs/latest.txt`.
+- If tokenizer special tokens were added during training, the adapter may also contain embedding-related weights and be much larger than a pure LoRA-only checkpoint.

@@ -10,6 +10,13 @@
 
 **适用场景**：文本审核、误报检测、风险分级、情感分析等中文分类任务。
 
+如果你更关心“能否稳定跑通训练、评估、预测、部署”，可以直接看：
+
+1. 快速开始
+2. 运行约束
+3. 模型来源与部署前提
+4. 配置系统
+
 ### 核心特性
 
 - **参数高效**：LoRA 微调仅需 0.1% 参数，BERT-Base 从 110M 降到 300K 可训练参数
@@ -57,7 +64,7 @@ AtomLoRA/
 │   │   ├── model_factory.py      # 模型工厂（构建 TaskTextClassifier）
 │   │   └── text_dataset.py       # 数据集和 DataLoader
 │   ├── predict/predictor.py      # 推理预测
-│   ├── scheduler/gpu_scheduler.py # GPU 调度
+│   ├── scheduler/gpu_scheduler.py # 预留调度扩展
 │   ├── trainer/
 │   │   ├── train_engine.py       # 训练引擎
 │   │   └── metric_manager.py     # 评估指标管理
@@ -119,6 +126,24 @@ outputs/demo_single_cls/
 └── metrics.json          # 最优评估指标
 ```
 
+### 训练产物边界
+
+`outputs/{exp_id}/` 默认包含：
+
+- LoRA adapter
+- 分类头权重
+- tokenizer
+- 训练配置副本
+- 最优评估指标
+
+`outputs/{exp_id}/` 默认**不包含**：
+
+- HuggingFace 基础模型完整权重
+- 原始训练集 / 验证集 / 测试集
+- Python 运行环境和依赖
+
+这也是为什么部署阶段仍然需要 `model.path` 可用，详见下方“模型来源与部署前提”。
+
 ### 快速访问最新实验
 
 训练完成后，`outputs/latest/` 始终指向最新实验：
@@ -137,7 +162,7 @@ atomlora predict --config latest --text "测试文本"
 atomlora serve --config latest
 ```
 
-> 如果系统不支持符号链接，`outputs/latest.txt` 会记录最新实验路径。
+> 如果系统不支持符号链接，`outputs/latest.txt` 会记录最新实验路径，`--config latest` 同样会自动读取它。
 
 ### 安装模式说明
 
@@ -158,9 +183,59 @@ atomlora serve --config latest
 |------|------|
 | GPU 数量 | 单卡（多卡暂不支持） |
 | API worker | 单 worker（多 worker 会 OOM） |
+| API reload | GPU 模式不支持 `--reload` |
 | 数据格式 | JSONL，每行一个 JSON 对象 |
 | 配置格式 | YAML，支持继承 |
 | Python | >= 3.9 |
+
+### 模型来源与部署前提
+
+AtomLoRA 保存的是：
+
+- LoRA adapter
+- 分类头权重
+- tokenizer
+- 训练配置副本
+
+默认**不会**把 HuggingFace 基础模型完整复制到 `outputs/{exp_id}/` 中。
+
+这意味着评估、预测、启动 API 服务时，仍然需要能够加载 `model.path` 对应的基础模型：
+
+- 如果 `model.path` 是本地目录，例如 `./models/bert-base-chinese`，则部署机器需要有这个目录
+- 如果 `model.path` 是 HuggingFace repo id，例如 `bert-base-chinese`，则部署机器需要：
+  - 已经有本地缓存
+  - 或仍然可以访问 HuggingFace
+
+最稳妥的做法是：
+
+- 训练前就把基础模型下载到本地目录
+- 在配置中把 `model.path` 写成本地路径
+- 训练、评估、预测、部署都统一使用该本地路径
+
+### 离线部署示例
+
+如果你希望训练后在**无外网**环境中稳定执行 `eval / predict / serve`，建议从一开始就使用本地模型目录：
+
+```yaml
+model:
+  arch: "bert-base-chinese"
+  path: "./models/bert-base-chinese"
+```
+
+推荐流程：
+
+1. 先把基础模型下载到 `./models/bert-base-chinese`
+2. 训练时直接使用这一路径
+3. 评估、预测、部署继续使用同一份配置或训练产物中的 `config.yaml`
+
+典型命令：
+
+```bash
+atomlora train --config configs/my_experiment.yaml
+atomlora eval --config configs/my_experiment.yaml
+atomlora predict --config configs/my_experiment.yaml --text "测试文本"
+atomlora serve --config configs/my_experiment.yaml
+```
 
 ### 兼容模式（不安装包）
 
@@ -223,6 +298,7 @@ optimizer:
 ## 配置系统
 
 AtomLoRA 使用 YAML 配置文件驱动所有行为。配置支持继承，子配置覆盖父配置的同名字段。
+训练完成后，`eval / predict / serve` 默认优先读取 `outputs/{exp_id}/config.yaml` 作为模型语义真相，而不是盲信当前外部配置文件。
 
 ### 最小配置示例
 
@@ -280,32 +356,12 @@ data:
 
 ---
 
-## 项目亮点
+## 工程特点
 
-### 参数高效
-
-- LoRA 微调仅需 0.1%-1% 的参数量
-- BERT-Large 微调仅需 0.3M 参数 vs 完整微调 110M
-
-### 快速迭代
-
-- 灵活的 YAML 配置系统，支持配置继承
-- 自动日志记录和结果跟踪
-- 支持早停（Early Stopping）和多种学习率调度策略
-
-### 生产就绪
-
-- 完整的 FastAPI API 服务
-- 模型热加载和版本管理
-- 详细的日志和错误处理
-- 支持 GPU 自动调度
-
-### 易于使用
-
-- 模块化的代码设计
-- `pip install -e .` 一键安装
-- 支持 CPU/GPU 自动检测
-- Windows / Linux / macOS 兼容
+- 配置驱动：训练、评估、预测、服务统一由 YAML 驱动，支持配置继承
+- 参数高效：默认围绕 LoRA 微调设计，适合中文分类场景的小数据快速迭代
+- 产物清晰：训练输出集中在 `outputs/{exp_id}/`，便于追踪 adapter、分类头、tokenizer 和指标
+- 部署可控：支持 API 服务、显式设备选择，以及 `outputs/{exp_id}/config.yaml` 作为运行期语义真相
 
 ---
 
@@ -362,6 +418,15 @@ A: 支持 HuggingFace Hub 上的任意 Transformer 模型（BERT、ERNIE、RoBER
 
 **Q: 如何迁移 LoRA 权重到其他模型？**
 A: LoRA 权重是通用的。将 `outputs/{exp_id}/adapter/` 目录加载到相同架构的其他模型即可。分类头权重在 `outputs/{exp_id}/classifier/classifiers.pt`。
+
+**Q: `outputs/{exp_id}` 能不能直接理解成完整离线模型包？**
+A: 不能默认这样理解。它默认包含 adapter、分类头、tokenizer 和配置副本，但不包含完整基础模型。如果 `model.path` 仍然指向 HuggingFace repo id，那么推理阶段仍依赖本地缓存或网络。要做稳定离线部署，建议从训练开始就把 `model.path` 指向本地模型目录。
+
+**Q: 为什么我的 adapter 文件比预期大？**
+A: 如果训练时给 tokenizer 新增了 special tokens，模型会执行 embedding resize。此时 PEFT 会连同 embedding 相关层一起保存到 adapter 中，所以 `adapter_model.safetensors` 体积会明显增大。这是预期行为，迁移时需要保持 tokenizer 与词表一致。
+
+**Q: 为什么训练后还能在预测时看到 HuggingFace 加载日志？**
+A: 因为 AtomLoRA 默认保存的是 adapter、分类头和 tokenizer，不会把基础模型完整复制到 `outputs/{exp_id}/`。如果 `model.path` 配的是 `bert-base-chinese` 这类 HuggingFace repo id，预测/评估/服务阶段仍会按该路径加载基础模型。若需要稳定离线部署，建议先把基础模型下载到本地目录，并在配置中把 `model.path` 写成本地路径。
 
 **Q: 训练时显存不足怎么办？**
 A: 尝试减小 `batch_size`、增大 `gradient_accumulation_steps`、降低 `max_len`，或减小 LoRA `rank`。

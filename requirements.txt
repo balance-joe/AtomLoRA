@@ -7,12 +7,10 @@
 # Core
 transformers>=4.30
 peft>=0.4
-accelerate>=0.20
 
 # Data & config
 PyYAML>=6.0
 numpy>=1.24
-pandas>=2.0
 scikit-learn>=1.0
 tqdm>=4.60
 

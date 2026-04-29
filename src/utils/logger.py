@@ -95,10 +95,10 @@ def init_logger(
 
 
 def get_logger(experiment_id: Optional[str] = None) -> logging.Logger:
-    """获取已初始化的Logger（按实验ID），无则返回默认Logger"""
+    """获取已初始化的Logger（按实验ID），无则返回 root logger"""
     if experiment_id:
         logger = logging.getLogger(f"exp_{experiment_id}")
         if logger.handlers:
             return logger
-    # 返回默认Logger（未绑定实验ID）
-    return init_logger()
+    # 返回 root logger，避免创建孤儿 logger
+    return logging.getLogger()
