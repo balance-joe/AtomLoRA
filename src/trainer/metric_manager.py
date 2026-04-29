@@ -1,11 +1,58 @@
 import numpy as np
+import torch
 from sklearn.metrics import f1_score, accuracy_score
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class MetricManager:
     def __init__(self, config):
         self.task_type = config["task_type"]
         self.config = config
-        
+
+    def validate_inputs(self, all_logits, all_labels):
+        """验证 logits/labels 的 shape、值域、任务对齐。不通过则抛异常。"""
+        if set(all_logits.keys()) != set(all_labels.keys()):
+            raise ValueError(
+                f"任务名不匹配: logits={set(all_logits.keys())}, labels={set(all_labels.keys())}"
+            )
+
+        for task_name in all_logits:
+            logits = all_logits[task_name]
+            labels = all_labels[task_name]
+
+            # shape 对齐
+            if logits.shape[0] != labels.shape[0]:
+                raise ValueError(
+                    f"任务 '{task_name}' 样本数不匹配: logits={logits.shape[0]}, labels={labels.shape[0]}"
+                )
+
+            num_classes = logits.shape[1]
+            label_min = int(labels.min())
+            label_max = int(labels.max())
+
+            # 值域检查
+            if label_min < 0:
+                raise ValueError(
+                    f"任务 '{task_name}' 存在负标签: min={label_min}"
+                )
+            if label_max >= num_classes:
+                raise ValueError(
+                    f"任务 '{task_name}' 标签越界: max={label_max}, num_classes={num_classes}"
+                )
+
+            # 诊断日志（仅首次打印）
+            unique_labels = torch.unique(labels).tolist()
+            preds = np.argmax(logits.numpy(), axis=1)
+            unique_preds = np.unique(preds).tolist()
+            logger.info(
+                f"[eval-check] {task_name}: "
+                f"samples={logits.shape[0]}, classes={num_classes}, "
+                f"label_range=[{label_min},{label_max}], "
+                f"unique_labels={unique_labels}, unique_preds={unique_preds}"
+            )
+
     def compute(self, all_logits, all_labels):
         """
         all_logits: Dict[task_name, Tensor]
@@ -26,23 +73,15 @@ class MetricManager:
             metrics["main_score"] = f1
             return metrics
             
-        # 2. 双任务 (定制逻辑：misreport -> binary, risk -> macro)
+        # 2. 多任务
         loss_weights = self.config["train"].get("loss_weight", [1.0, 1.0])
-        
+
         for i, (task_name, logits) in enumerate(all_logits.items()):
             labels = all_labels[task_name].numpy()
             preds = np.argmax(logits.numpy(), axis=1)
-            
-            # 定制 metric
-            if "risk" in task_name:
-                # 风险等级：Macro F1
-                score = f1_score(labels, preds, average='macro')
-                metrics[f"{task_name}_f1_macro"] = score
-            else:
-                # 误报：Binary F1 (假设 0/1) 或 Macro
-                score = f1_score(labels, preds, average='macro') # 安全起见用 macro，或根据 id 0/1 调整
-                metrics[f"{task_name}_f1"] = score
-                
+
+            score = f1_score(labels, preds, average='macro')
+            metrics[f"{task_name}_f1"] = score
             metrics[f"{task_name}_acc"] = accuracy_score(labels, preds)
             scores_for_avg.append(score)
             

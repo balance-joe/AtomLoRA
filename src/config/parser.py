@@ -120,48 +120,102 @@ class ConfigParser:
     def _generate_label_mapping(self):
         data = self.final_config.get("data", {})
         task_type = self.final_config.get("task_type", "single_cls")
-        
+
         if "label_mapping" in data:
-            return # 已手动配置，无需生成
+            return  # 已手动配置，无需生成
 
         if "label_subset" not in data:
-            # 如果也没有 subset，稍后 validate 会报错
-            return
+            return  # 没有 subset，稍后 validate 会报错
 
         subset = data["label_subset"]
-        
+
         if task_type == "single_cls":
-            # 单任务：List[str] -> Dict
-            mapping = {label: idx for idx, label in enumerate(subset)}
-            data["label_mapping"] = mapping
+            # 单任务：生成 {task_name: {int: str}} 格式
+            if isinstance(subset, list):
+                # label_subset: ["正确", "错误"] → label_mapping: {0: "正确", 1: "错误"}
+                mapping = {idx: label for idx, label in enumerate(subset)}
+                # 取 label_col 的第一个 task_name 作为 key
+                label_col = data.get("label_col", {})
+                if isinstance(label_col, dict):
+                    task_name = next(iter(label_col.keys()))
+                    data["label_mapping"] = {task_name: mapping}
+                else:
+                    data["label_mapping"] = mapping
+            elif isinstance(subset, dict):
+                # label_subset: {status: ["正确", "错误"]} → label_mapping: {status: {0: "正确", 1: "错误"}}
+                data["label_mapping"] = {
+                    task_name: {idx: label for idx, label in enumerate(labels)}
+                    for task_name, labels in subset.items()
+                }
             
         elif task_type == "multi_cls":
-            # 双任务：Dict[str, List[str]] -> Dict[str, Dict]
-            mappings = {}
-            for task_name, labels in subset.items():
-                mappings[task_name] = {label: idx for idx, label in enumerate(labels)}
-            data["label_mapping"] = mappings
+            # 多任务：{task: [labels]} -> {task: {int: str}}
+            data["label_mapping"] = {
+                task_name: {idx: label for idx, label in enumerate(labels)}
+                for task_name, labels in subset.items()
+            }
         
         logger.info(f"从标签子集自动生成的标签映射 {task_type}")
 
     def _validate_config(self):
         # 1. 基础字段
         for field in REQUIRED_FIELDS["basic"]:
-            if field not in self.final_config: raise ValueError(f"Missing {field}")
-        
-        # 2. 检查数据路径 (经过 normalize 后应该有了)
+            if field not in self.final_config:
+                raise ValueError(
+                    f"[CONFIG] 缺少必填字段 '{field}'。"
+                    f"请在配置文件顶层添加 {field}: <value>"
+                )
+
+        # 2. task_type 合法值
+        valid_task_types = ("single_cls", "multi_cls")
+        if self.final_config["task_type"] not in valid_task_types:
+            raise ValueError(
+                f"[CONFIG] task_type='{self.final_config['task_type']}' 不合法，"
+                f"必须是 {valid_task_types}"
+            )
+
+        # 3. 检查数据路径
         for path_key in ["train_path", "dev_path"]:
             if path_key not in self.final_config.get("data", {}):
-                raise ValueError(f"Missing data.{path_key}")
+                raise ValueError(
+                    f"[CONFIG] 缺少 data.{path_key}。"
+                    f"请指定训练/验证数据的 JSONL 文件路径"
+                )
 
-        # 3. 检查 label_mapping (经过 generate 后应该有了)
+        # 4. 检查数据文件是否存在
+        for path_key in ["train_path", "dev_path"]:
+            data_path = self.final_config["data"][path_key]
+            if not os.path.isabs(data_path):
+                # 相对路径：相对于项目根目录（CONFIG_ROOT 的父目录）
+                project_root = os.path.dirname(CONFIG_ROOT)
+                resolved = os.path.normpath(os.path.join(project_root, data_path))
+            else:
+                resolved = data_path
+            if not os.path.exists(resolved):
+                raise FileNotFoundError(
+                    f"[CONFIG] 数据文件不存在: {data_path}\n"
+                    f"  解析为: {os.path.abspath(resolved)}"
+                )
+
+        # 5. 检查 label_mapping
         if "label_mapping" not in self.final_config.get("data", {}):
-            raise ValueError("Missing data.label_subset or data.label_mapping")
+            raise ValueError(
+                "[CONFIG] 缺少 data.label_mapping 或 data.label_subset。\n"
+                "  请至少指定其中一个，例如:\n"
+                "    label_subset:\n"
+                "      status: [0, 1]\n"
+                "  或:\n"
+                "    label_mapping:\n"
+                "      status: {0: '正确', 1: '错误'}"
+            )
 
-        # 4. 双任务检查
+        # 6. 双任务检查
         if self.final_config["task_type"] == "multi_cls":
             if "loss_weight" not in self.final_config.get("train", {}):
-                raise ValueError("Double task requires train.loss_weight")
+                raise ValueError(
+                    "[CONFIG] multi_cls 任务需要 train.loss_weight 配置。\n"
+                    "  例如: loss_weight: [1.0, 1.0]"
+                )
 
     def _adapt_task_type(self):
         # 逻辑保持您原有的，但现在 label_mapping 肯定存在了

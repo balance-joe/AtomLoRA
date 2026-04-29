@@ -19,8 +19,10 @@ def _resolve_model_path(model_path: str, logger) -> str:
             logger.info(f"Loading local model from: {abs_path}")
             return abs_path
         raise FileNotFoundError(
-            f"Local model path not found: {abs_path}\n"
-            f"Either download the model locally, or use a HuggingFace repo id (e.g. bert-base-chinese)"
+            f"[MODEL] 本地模型路径不存在: {abs_path}\n"
+            f"  解决方案（任选其一）:\n"
+            f"  1. 下载模型到该路径\n"
+            f"  2. 改用 HuggingFace repo id（如 model.path: 'bert-base-chinese'）"
         )
     logger.info(f"Loading model from HuggingFace: {model_path}")
     return model_path

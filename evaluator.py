@@ -1,5 +1,13 @@
 import os
+import sys
 import torch
+
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 from tqdm import tqdm
 from peft import PeftModel
 from transformers import AutoTokenizer, AutoModel
@@ -39,6 +47,10 @@ class Evaluator:
             model_path,
             output_hidden_states=True
         )
+
+        # Resize embedding 以匹配训练时添加的特殊 token
+        if len(self.tokenizer) > base_model.config.vocab_size:
+            base_model.resize_token_embeddings(len(self.tokenizer))
 
         self.bert = PeftModel.from_pretrained(
             base_model,
@@ -117,13 +129,8 @@ class Evaluator:
             all_logits[t] = torch.cat(all_logits[t], dim=0)
             all_labels[t] = torch.cat(all_labels[t], dim=0)
 
-        noise_id = self.config["data"]["label_map"]["无关噪声类"]
-
-        for t in all_logits:
-            logits = all_logits[t]
-            fake_logits = torch.zeros_like(logits)
-            fake_logits[:, noise_id] = 1000.0  # 极大值，确保 argmax 命中
-            all_logits[t] = fake_logits
+        # 验证 logits/labels 一致性
+        self.metric_manager.validate_inputs(all_logits, all_labels)
 
         metrics = self.metric_manager.compute(all_logits, all_labels)
         return metrics

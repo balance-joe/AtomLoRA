@@ -34,7 +34,7 @@ model:
   dropout: 0.15
   freeze_bert: True
   arch: "bert-base-chinese"                                 # 模型架构：使用BERT-base中文预训练模型
-  path: "./models/bert-base-chinese"                        # 模型路径：本地预训练模型文件位置
+  path: "bert-base-chinese"                                 # 模型路径：HuggingFace repo id（首次运行自动下载）
 
   lora:
     rank: 8

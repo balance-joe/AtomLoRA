@@ -74,8 +74,15 @@ def init_logger(
     file_handler.addFilter(ExperimentFilter(exp_id, task_type))
     logger.addHandler(file_handler)
     
-    # 2. 添加控制台处理器（简化格式）
-    console_handler = logging.StreamHandler()
+    # 2. 添加控制台处理器（简化格式，强制 UTF-8）
+    import sys
+    if hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
+    console_handler = logging.StreamHandler(sys.stdout)
     console_formatter = logging.Formatter(CONSOLE_FORMAT, datefmt="%Y-%m-%d %H:%M:%S")
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)

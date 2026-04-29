@@ -4,6 +4,13 @@ import sys
 import os
 import argparse
 
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 from src.model.text_dataset import create_dataloader
 from src.predict.predictor import TextAuditPredictor
 # 添加路径

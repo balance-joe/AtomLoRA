@@ -1,17 +1,22 @@
-# AtomLoRA - 高效的大语言模型微调框架
+# AtomLoRA
+
+> 面向中文文本分类/审核场景的轻量级 LoRA 微调框架。
+> 专注小数据快速微调 + 多任务分类 + 一键部署 API。
+> 仅需微调 0.1%-1% 的参数，单张 GPU 即可完成训练和推理。
 
 ## 项目概述
 
-**AtomLoRA** 是一个基于 **LoRA (Low-Rank Adaptation)** 技术的轻量级大语言模型微调框架，专为快速迭代和高效训练而设计。通过参数高效的微调方式，能够在有限的计算资源下实现对预训练模型（如 BERT、ERNIE 等）的快速适配。
+**AtomLoRA** 基于 LoRA (Low-Rank Adaptation) 技术，在 BERT/ERNIE 等预训练模型上做参数高效微调。与 HuggingFace Trainer 的区别：AtomLoRA 专注于**中文文本分类场景**，内置多任务学习、差异化学习率、配置继承、生产级 API 服务，开箱即用。
+
+**适用场景**：文本审核、误报检测、风险分级、情感分析等中文分类任务。
 
 ### 核心特性
 
-- **参数高效微调 (LoRA)**：仅需微调 0.01%-1% 的参数，显著降低计算成本和显存占用
-- **多任务学习框架**：支持单任务和多任务分类，灵活的任务配置系统
-- **模块化设计**：清晰的代码结构，易于扩展和定制
-- **配置驱动**：基于 YAML 的灵活配置系统，支持配置继承
-- **完整训练流程**：从数据加载、模型构建、训练到评估的端到端解决方案
-- **生产级 API 服务**：内置 FastAPI 服务，支持模型热加载和在线推理
+- **参数高效**：LoRA 微调仅需 0.1% 参数，BERT-Base 从 110M 降到 300K 可训练参数
+- **多任务分类**：单任务 / 多任务统一框架，配置驱动
+- **配置驱动**：YAML 配置 + 继承机制，一个模板跑多个实验
+- **端到端**：训练 → 评估 → 预测 → API 服务，全流程覆盖
+- **单 GPU 友好**：4GB 显存即可训练，支持 CPU 回退
 
 ---
 
@@ -80,34 +85,30 @@ AtomLoRA/
 
 ---
 
-## 快速开始
-
-### 1. 安装
+## 快速开始（3 分钟）
 
 ```bash
+# 1. 克隆并安装
 git clone https://github.com/balance-joe/AtomLoRA.git
 cd AtomLoRA
-pip install -e .
+bash install.sh cu121        # CUDA 12.1（CPU 用 bash install.sh cpu）
 ```
-
-安装完成后，`atomlora` 命令即可在终端直接使用。
-
-### 2. 准备数据
-
-项目内置了 demo 数据，位于 `data/raw/demo/` 目录。数据格式为 JSONL，每行一个 JSON 对象：
-
-```json
-{"content": "逸夫楼停电了谁管管", "status": 0}
-{"content": "图书馆开门时间是几点", "status": 1}
-```
-
-### 3. 训练模型
 
 ```bash
+# 2. 训练 demo 模型（首次运行自动下载 BERT）
 atomlora train --config configs/demo.yaml
+
+# 3. 评估
+atomlora eval --config configs/demo.yaml
+
+# 4. 单条预测
+atomlora predict --config configs/demo.yaml --text "逸夫楼停电了谁管管"
+
+# 5. 启动 API 服务
+atomlora serve --config configs/demo.yaml --port 8000
 ```
 
-训练完成后，模型产物保存在 `outputs/{exp_id}/` 目录下：
+训练产物保存在 `outputs/{exp_id}/` 目录：
 
 ```
 outputs/demo_single_cls/
@@ -118,33 +119,48 @@ outputs/demo_single_cls/
 └── metrics.json          # 最优评估指标
 ```
 
-### 4. 评估模型
+### 快速访问最新实验
+
+训练完成后，`outputs/latest/` 始终指向最新实验：
 
 ```bash
-atomlora eval --config configs/demo.yaml
+# 查看最新指标
+cat outputs/latest/metrics.json
+
+# 查看实验信息（exp_id、时间、config 路径）
+cat outputs/latest/info.json
+
+# 用最新模型预测
+atomlora predict --config latest --text "测试文本"
+
+# 用最新模型启动服务
+atomlora serve --config latest
 ```
 
-### 5. 单条预测
+> 如果系统不支持符号链接，`outputs/latest.txt` 会记录最新实验路径。
 
-```bash
-atomlora predict --config configs/demo.yaml --text "逸夫楼停电了谁管管"
-```
+### 安装模式说明
 
-输出 JSON 格式的预测结果。
+| 模式 | 命令 | 说明 |
+|------|------|------|
+| CPU | `bash install.sh cpu` | 仅 CPU 推理/训练 |
+| CUDA 11.8 | `bash install.sh cu118` | GPU（CUDA 11.8） |
+| CUDA 12.1 | `bash install.sh cu121` | GPU（CUDA 12.1） |
+| CUDA 12.4 | `bash install.sh cu124` | GPU（CUDA 12.4） |
+| Windows | `install.bat cu121` | 同上，用 bat 脚本 |
+| 手动 | `pip install -e .` | 需自行安装 PyTorch |
 
-### 6. 启动 API 服务
+不确定 CUDA 版本？运行 `nvidia-smi` 查看。
 
-```bash
-atomlora serve --config configs/demo.yaml --port 8000
-```
+### 运行约束
 
-服务启动后，可通过 HTTP 请求进行推理：
-
-```bash
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"content": "逸夫楼停电了谁管管"}'
-```
+| 约束 | 说明 |
+|------|------|
+| GPU 数量 | 单卡（多卡暂不支持） |
+| API worker | 单 worker（多 worker 会 OOM） |
+| 数据格式 | JSONL，每行一个 JSON 对象 |
+| 配置格式 | YAML，支持继承 |
+| Python | >= 3.9 |
 
 ### 兼容模式（不安装包）
 

@@ -7,8 +7,8 @@ from transformers import get_linear_schedule_with_warmup
 from src.utils.logger import get_logger
 from src.trainer.metric_manager import MetricManager
 from src.utils.paths import (
-    ADAPTER_DIR, CLASSIFIER_DIR, TOKENIZER_DIR, CLASSIFIER_FILE,
-    copy_config_to_output, save_metrics
+    ADAPTER_DIR, CLASSIFIER_DIR, TOKENIZER_DIR, CLASSIFIER_FILE, CONFIG_FILE,
+    copy_config_to_output, save_metrics, update_latest_link
 )
 
 class Trainer:
@@ -193,6 +193,11 @@ class Trainer:
         save_metrics(best_metrics, self.output_dir)
         self.logger.info(f"✅ 最优指标已保存至: {os.path.join(self.output_dir, 'metrics.json')}")
 
+        # 创建 latest 链接，方便用户直接访问最新实验
+        config_copy = os.path.join(self.output_dir, CONFIG_FILE)
+        update_latest_link(self.output_dir, metrics=best_metrics, config_path=config_copy)
+        self.logger.info(f"✅ outputs/latest -> {self.output_dir}")
+
     def evaluate(self):
         self.model.eval()
         all_logits = {}
@@ -244,6 +249,7 @@ class Trainer:
             all_logits[t] = torch.cat(all_logits[t], dim=0)
             all_labels[t] = torch.cat(all_labels[t], dim=0)
 
+        self.metric_manager.validate_inputs(all_logits, all_labels)
         return self.metric_manager.compute(all_logits, all_labels)
 
     
