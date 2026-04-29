@@ -177,7 +177,7 @@ class TextAuditPredictor:
             raise
 
 
-    def _load_model_weights(self, torch=None):
+    def _load_model_weights(self):
         """
         加载训练好的模型权重（PEFT 标准 LoRA 模式）
         顺序：
@@ -189,6 +189,8 @@ class TextAuditPredictor:
         2. 移除 model.pt 加载。
         3. 关键：若 self.model.bert 已是 PeftModel (通过 _inject_lora)，则使用 load_adapter 加载权重。
         """
+
+        import torch
 
         # 1. 移除 model.pt 加载：
         self.logger.info("ℹ️ LoRA模式，跳过完整模型 model.pt 的加载。")
@@ -277,9 +279,6 @@ class TextAuditPredictor:
         classifier_path = resolve_classifier_path(self.exp_dir)
         if os.path.exists(classifier_path):
             try:
-                # 【关键修复】确保 torch 在此作用域可用
-                import torch
-
                 clf_state = torch.load(classifier_path, map_location=self.device)
                 self.model.classifiers.load_state_dict(clf_state)
                 self.logger.info("✅ 分类头权重加载成功")

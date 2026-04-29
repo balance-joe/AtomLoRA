@@ -93,31 +93,33 @@ class Trainer:
     def _log_training_monitor(self, step, logits_dict, labels):
         """定期打印训练过程中的置信度和 LoRA 权重状态，辅助调试"""
         self.model.eval()
-        with torch.no_grad():
-            for task_name, logits in logits_dict.items():
-                probs = F.softmax(logits.detach(), dim=-1)
-                max_probs = probs.max(dim=-1).values
-                mean_conf = max_probs.mean().item()
+        try:
+            with torch.no_grad():
+                for task_name, logits in logits_dict.items():
+                    probs = F.softmax(logits.detach(), dim=-1)
+                    max_probs = probs.max(dim=-1).values
+                    mean_conf = max_probs.mean().item()
 
-                preds = probs.argmax(dim=-1)
-                if isinstance(labels, dict):
-                    true_labels = labels.get(task_name, next(iter(labels.values())))
-                else:
-                    true_labels = labels
-                train_acc = (preds == true_labels).float().mean().item()
+                    preds = probs.argmax(dim=-1)
+                    if isinstance(labels, dict):
+                        true_labels = labels.get(task_name, next(iter(labels.values())))
+                    else:
+                        true_labels = labels
+                    train_acc = (preds == true_labels).float().mean().item()
 
-                self.logger.info(
-                    f"📊 Step {step} | {task_name} | "
-                    f"置信度: {mean_conf:.4f} | 训练准确率: {train_acc:.4f}"
-                )
+                    self.logger.info(
+                        f"📊 Step {step} | {task_name} | "
+                        f"置信度: {mean_conf:.4f} | 训练准确率: {train_acc:.4f}"
+                    )
 
-        # LoRA 权重健康检查
-        for name, param in self.model.bert.named_parameters():
-            if "lora_B" in name and param.requires_grad:
-                lora_b_mean = torch.mean(param.data).item()
-                self.logger.info(f"📌 Step {step} | {name} 均值: {lora_b_mean:.6f}")
-                break
-        self.model.train()
+            # LoRA 权重健康检查
+            for name, param in self.model.bert.named_parameters():
+                if "lora_B" in name and param.requires_grad:
+                    lora_b_mean = torch.mean(param.data).item()
+                    self.logger.info(f"📌 Step {step} | {name} 均值: {lora_b_mean:.6f}")
+                    break
+        finally:
+            self.model.train()
 
     def train(self):
         epochs = self.config["train"]["num_epochs"]
@@ -175,7 +177,13 @@ class Trainer:
                     global_step += 1
 
                 pbar.set_postfix({"loss": f"{loss.item() * grad_accum:.4f}"})
-            
+
+            # 处理 epoch 末尾不足一个累积窗口的残余梯度
+            if (step + 1) % grad_accum != 0:
+                self.optimizer.step()
+                self.scheduler.step()
+                self.optimizer.zero_grad()
+
             # 评估
             metrics = self.evaluate()
             log_msg = f"Epoch {epoch} | " + " | ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])

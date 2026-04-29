@@ -56,10 +56,15 @@ class ModelManager:
         if model_name in self.models:
             return
 
-        # 超过上限时自动卸载已有模型（防止 GPU OOM）
-        if len(self.models) >= MAX_MODELS:
-            logger.warning(f"已加载 {len(self.models)} 个模型（上限 {MAX_MODELS}），自动卸载旧模型")
-            self.unload_all()
+        # 超过上限时淘汰最久未用的模型（LRU）
+        while len(self.models) >= MAX_MODELS:
+            oldest_name = next(iter(self.models))
+            logger.warning(f"模型数量达上限 {MAX_MODELS}，淘汰最久未用模型: {oldest_name}")
+            try:
+                self.models[oldest_name].close()
+            except Exception:
+                pass
+            del self.models[oldest_name]
 
         if config_path is None:
             config_path = os.path.join(CONFIGS_ROOT, f"{model_name}.yaml")
@@ -77,14 +82,16 @@ class ModelManager:
 
     def predict(self, model_name: str, sample: dict) -> dict:
         if model_name not in self.models:
-            self.load_model(model_name)
-
+            raise FileNotFoundError(
+                f"模型 '{model_name}' 未加载。请先通过 POST /load 或启动时指定配置加载模型。"
+            )
         predictor = self.models[model_name]
         result = predictor.predict(sample)
         return result
 
     def get_model_info(self, model_name: str) -> dict:
         if model_name not in self.models:
-            self.load_model(model_name)
-
+            raise FileNotFoundError(
+                f"模型 '{model_name}' 未加载。请先通过 POST /load 或启动时指定配置加载模型。"
+            )
         return self.models[model_name].get_model_info()

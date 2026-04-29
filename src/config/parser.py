@@ -97,13 +97,29 @@ class ConfigParser:
         return merged
 
     def _replace_variables(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """将配置中的 ${VAR_NAME} 占位符替换为全局变量值。"""
+        import json as _json
         global_path = os.path.join(CONFIG_ROOT, "../data/global_label_map.json")
         global_labels = {}
         if os.path.exists(global_path):
             with open(global_path, 'r', encoding='utf-8') as f:
-                global_labels = yaml.safe_load(f)
-        
-        return config 
+                global_labels = _json.load(f)
+
+        if not global_labels:
+            return config
+
+        def _walk(obj):
+            if isinstance(obj, str):
+                for key, val in global_labels.items():
+                    obj = obj.replace(f"${{{key}}}", str(val))
+                return obj
+            elif isinstance(obj, dict):
+                return {k: _walk(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [_walk(v) for v in obj]
+            return obj
+
+        return _walk(config)
 
     def _normalize_field_names(self):
         """标准化字段名，处理不同别名"""
