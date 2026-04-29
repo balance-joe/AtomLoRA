@@ -6,6 +6,7 @@ from tqdm import tqdm
 from transformers import get_linear_schedule_with_warmup
 from src.utils.logger import get_logger
 from src.trainer.metric_manager import MetricManager
+from src.eval.runner import run_evaluation
 from src.utils.paths import (
     ADAPTER_DIR, CLASSIFIER_DIR, TOKENIZER_DIR, CLASSIFIER_FILE, CONFIG_FILE,
     copy_config_to_output, save_metrics, update_latest_link
@@ -190,7 +191,7 @@ class Trainer:
             self.logger.info(log_msg)
             
             # 保存最优模型
-            current_score = metrics.get("main_score", 0)
+            current_score = metrics["main_score"]
             if current_score > best_score:
                 best_score = current_score
                 best_metrics = metrics
@@ -207,58 +208,10 @@ class Trainer:
         self.logger.info(f"✅ outputs/latest -> {self.output_dir}")
 
     def evaluate(self):
-        self.model.eval()
-        all_logits = {}
-        all_labels = {}
-        
-        # 关键修改：从label_col获取任务名称
-        if self.config["task_type"] == "single_cls":
-            task_names = ["default"]
-            # 获取单任务的标签键（比如'misreport'）
-            label_col_config = self.config["data"]["label_col"]
-            if isinstance(label_col_config, dict):
-                single_task_key = next(iter(label_col_config.keys()))  # 拿到'标签'
-            else:
-                single_task_key = label_col_config
-        else:
-            label_col_config = self.config["data"]["label_col"]
-            if not isinstance(label_col_config, dict):
-                raise ValueError("multi_cls 任务要求 data.label_col 为字典")
-            task_names = list(label_col_config.keys())
-
-        for t in task_names:
-            all_logits[t] = []
-            all_labels[t] = []
-            
-        with torch.no_grad():
-            for batch in self.dev_loader:
-                input_ids = batch["input_ids"].to(self.device)
-                mask = batch["attention_mask"].to(self.device)
-                labels = batch["labels"]
-                
-                outputs = self.model(input_ids, mask, labels=None)
-                
-                for t in task_names:
-                    if self.config["task_type"] == "single_cls":
-                        logit = outputs.get("default", outputs) if isinstance(outputs, dict) else outputs
-                        # 处理字典格式的labels
-                        if isinstance(labels, dict):
-                            label = labels[single_task_key]  # 提取张量（如labels['misreport']）
-                        else:
-                            label = labels
-                    else:
-                        logit = outputs[t]
-                        label = labels[t]
-                        
-                    all_logits[t].append(logit.cpu())
-                    all_labels[t].append(label.cpu())  # 现在label是张量，可调用cpu()
-
-        for t in task_names:
-            all_logits[t] = torch.cat(all_logits[t], dim=0)
-            all_labels[t] = torch.cat(all_labels[t], dim=0)
-
-        self.metric_manager.validate_inputs(all_logits, all_labels)
-        return self.metric_manager.compute(all_logits, all_labels)
+        return run_evaluation(
+            self.model, self.dev_loader, self.config,
+            self.metric_manager, self.device, show_progress=False
+        )
 
     
     def save_model(self):

@@ -8,7 +8,6 @@ if hasattr(sys.stdout, 'reconfigure'):
         sys.stderr.reconfigure(encoding='utf-8')
     except Exception:
         pass
-from tqdm import tqdm
 from peft import PeftModel
 from transformers import AutoTokenizer, AutoModel
 from src.utils.logger import get_logger
@@ -16,6 +15,7 @@ from src.trainer.metric_manager import MetricManager
 from src.model.model_factory import TaskTextClassifier
 from src.data.data_processor import load_dataset
 from src.model.text_dataset import create_dataloader
+from src.eval.runner import run_evaluation
 from src.utils.paths import resolve_adapter_path, resolve_classifier_path, resolve_tokenizer_path
 
 
@@ -76,61 +76,7 @@ class Evaluator:
             batch_size=self.config["train"]["batch_size"],
             shuffle=False
         )
-
-        all_logits, all_labels = {}, {}
-
-        # ========== 完全对齐训练代码的task_names逻辑 ==========
-        if self.config["task_type"] == "single_cls":
-            task_names = ["default"]  # 模型输出键固定为default
-            # 提取配置里的实际标签键（你的是class）
-            label_col_config = self.config["data"]["label_col"]
-            if isinstance(label_col_config, dict):
-                single_task_key = next(iter(label_col_config.keys()))  # 拿到class
-            else:
-                single_task_key = label_col_config
-        else:
-            label_col_config = self.config["data"]["label_col"]
-            if not isinstance(label_col_config, dict):
-                raise ValueError("multi_cls 任务要求 data.label_col 为字典")
-            task_names = list(label_col_config.keys())
-
-        # 初始化容器
-        for t in task_names:
-            all_logits[t] = []
-            all_labels[t] = []
-
-        with torch.no_grad():
-            for batch in tqdm(loader, desc="Evaluating"):
-                input_ids = batch["input_ids"].to(self.device)
-                mask = batch["attention_mask"].to(self.device)
-                labels = batch["labels"]
-
-                outputs = self.model(input_ids, mask, labels=None)
-
-                # ========== 完全对齐训练代码的取值逻辑 ==========
-                for t in task_names:
-                    if self.config["task_type"] == "single_cls":
-                        # 取模型输出：优先default键，非字典则取整个outputs
-                        logit = outputs.get("default", outputs) if isinstance(outputs, dict) else outputs
-                        # 取标签：用single_task_key（class）从labels字典取值
-                        if isinstance(labels, dict):
-                            label = labels[single_task_key]
-                        else:
-                            label = labels
-                    else:
-                        logit = outputs[t]
-                        label = labels[t]
-
-                    all_logits[t].append(logit.cpu())
-                    all_labels[t].append(label.cpu())
-
-        # 拼接结果
-        for t in task_names:
-            all_logits[t] = torch.cat(all_logits[t], dim=0)
-            all_labels[t] = torch.cat(all_labels[t], dim=0)
-
-        # 验证 logits/labels 一致性
-        self.metric_manager.validate_inputs(all_logits, all_labels)
-
-        metrics = self.metric_manager.compute(all_logits, all_labels)
-        return metrics
+        return run_evaluation(
+            self.model, loader, self.config,
+            self.metric_manager, self.device, desc="Evaluating"
+        )

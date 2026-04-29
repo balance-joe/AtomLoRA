@@ -8,22 +8,22 @@ import os
 
 def _resolve_model_path(model_path: str, logger) -> str:
     """判断 model_path 是本地目录还是 HuggingFace repo id，返回可用路径。"""
-    is_local_like = (
-        "/" in model_path
-        or "\\" in model_path
-        or model_path.startswith(".")
-    )
-    if is_local_like:
-        abs_path = os.path.abspath(model_path)
-        if os.path.isdir(abs_path):
-            logger.info(f"Loading local model from: {abs_path}")
-            return abs_path
+    # 优先检查是否是本地目录（绝对路径或相对路径）
+    abs_path = os.path.abspath(model_path)
+    if os.path.isdir(abs_path):
+        logger.info(f"Loading local model from: {abs_path}")
+        return abs_path
+
+    # 相对路径以 ./ 或 ../ 开头但目录不存在 → 报错
+    if model_path.startswith(".") or model_path.startswith("/"):
         raise FileNotFoundError(
             f"[MODEL] 本地模型路径不存在: {abs_path}\n"
             f"  解决方案（任选其一）:\n"
             f"  1. 下载模型到该路径\n"
             f"  2. 改用 HuggingFace repo id（如 model.path: 'bert-base-chinese'）"
         )
+
+    # 其余情况视为 HuggingFace repo id（如 bert-base-chinese, meta-llama/Llama-3-8B）
     logger.info(f"Loading model from HuggingFace: {model_path}")
     return model_path
 

@@ -52,13 +52,13 @@ def cmd_predict(args):
     predictor.close()
 
 
-# 常见错误的用户友好提示
+# 常见错误的用户友好提示（key 精确匹配异常类型名）
 _ERROR_HINTS = {
     "FileNotFoundError": "文件不存在。请检查配置中的路径是否正确，模型是否已下载。",
-    "RuntimeError:CUDA": "GPU 显存不足。尝试减小 batch_size 或用 CPU 模式。",
-    "KeyError:label": "标签映射错误。请检查 label_col / label_mapping 配置是否与数据匹配。",
+    "RuntimeError": "运行时错误。如果涉及 CUDA，尝试减小 batch_size 或用 CPU 模式。",
+    "KeyError": "键错误。请检查配置中的字段名是否正确（如 label_col / label_mapping）。",
     "ModuleNotFoundError": "缺少依赖包。运行 pip install -r requirements.txt 或 bash install.sh。",
-    "No such file": "配置文件不存在。请检查 --config 参数路径。",
+    "ValueError": "值错误。请检查配置文件中的参数类型和取值范围。",
 }
 
 
@@ -70,11 +70,10 @@ def _friendly_error(e: Exception, config_path: str = None):
     print(f"\n{'='*50}")
     print(f"[ERROR] {err_type}: {err_msg}")
 
-    # 匹配提示
-    for key, hint in _ERROR_HINTS.items():
-        if key.lower() in (err_type + err_msg).lower():
-            print(f"[HINT] {hint}")
-            break
+    # 按异常类型名精确匹配提示
+    hint = _ERROR_HINTS.get(err_type)
+    if hint:
+        print(f"[HINT] {hint}")
 
     if config_path:
         print(f"[INFO] 配置文件: {config_path}")

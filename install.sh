@@ -39,16 +39,6 @@ case "$MODE" in
         ;;
 esac
 
-if [ $? -ne 0 ]; then
-    echo ""
-    echo "[ERROR] PyTorch 安装失败"
-    echo "[HINT] 常见原因:"
-    echo "  1. CUDA 版本不匹配 — 运行 nvidia-smi 查看版本"
-    echo "  2. 网络问题 — 尝试设置 pip 镜像: pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple"
-    echo "  3. pip 版本过旧 — 运行 pip install --upgrade pip"
-    exit 1
-fi
-
 # 验证 PyTorch
 echo "[2/3] 验证 PyTorch..."
 python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}')" || {
