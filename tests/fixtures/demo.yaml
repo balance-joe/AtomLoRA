@@ -1,0 +1,29 @@
+exp_id: "test_fixture"
+task_type: "single_cls"
+
+data:
+  train_path: "TRAIN_PLACEHOLDER"
+  dev_path: "DEV_PLACEHOLDER"
+  test_path: "TEST_PLACEHOLDER"
+  max_len: 32
+  text_col: "content"
+  label_col:
+    status: "status"
+  label_subset:
+    status: [0, 1]
+  label_mapping:
+    status: {0: "正确", 1: "错误"}
+
+model:
+  arch: "bert-base-chinese"
+  path: "bert-base-chinese"
+
+train:
+  num_epochs: 1
+  batch_size: 2
+  optimizer:
+    type: "AdamW"
+    groups:
+      bert: 2e-6
+      lora: 1.5e-4
+      classifier: 5e-4

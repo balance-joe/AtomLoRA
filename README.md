@@ -33,7 +33,7 @@
 AtomLoRA/
 ├── atomlora/                      # CLI 包
 │   ├── __init__.py
-│   └── cli.py                    # 命令行入口 (atomlora train/eval/predict/serve)
+│   └── cli.py                    # 命令行入口 (atomlora train/eval/predict/serve/split/doctor-data)
 │
 ├── api/                          # FastAPI 应用层
 │   ├── app.py                    # REST API 端点定义
@@ -59,7 +59,11 @@ AtomLoRA/
 │
 ├── src/                          # 核心代码
 │   ├── config/parser.py          # 配置解析器
-│   ├── data/data_processor.py    # 数据预处理
+│   ├── data/
+│   │   ├── io.py                 # JSONL 读写工具
+│   │   ├── splitter.py           # 数据切分（atomlora split）
+│   │   ├── doctor.py             # 数据质量诊断（atomlora doctor-data）
+│   │   └── data_processor.py     # 训练时数据加载与 tokenize
 │   ├── model/
 │   │   ├── model_factory.py      # 模型工厂（构建 TaskTextClassifier）
 │   │   └── text_dataset.py       # 数据集和 DataLoader
@@ -253,6 +257,148 @@ python predict.py --config configs/demo.yaml --text "文本"  # 预测
 3. 运行 `atomlora train --config configs/my_experiment.yaml`
 
 配置文件规范详见 [docs/config_v1.md](docs/config_v1.md)。
+
+---
+
+## 数据准备：split 与 doctor-data
+
+在训练之前，AtomLoRA 提供两个命令帮你完成 **原始数据 → 训练数据 → 质量诊断** 的流程。
+
+### 完整流程
+
+```bash
+# 1. 将原始 JSONL 切分为 train / dev / test（自动分层采样）
+atomlora split --config configs/demo.yaml --output data/raw/demo_split
+
+# 2. 检查数据质量（标签分布、空文本、重复、类别缺失等）
+atomlora doctor-data --config configs/demo.yaml
+
+# 3. 训练
+atomlora train --config data/raw/demo_split/config.generated.yaml
+```
+
+### atomlora split
+
+将一个 JSONL 文件切分为 train / dev / test 三份，支持分层采样（stratify）保持标签比例一致。
+
+**极简模式**（推荐）：从配置文件读取字段信息，无需手动指定：
+
+```bash
+atomlora split --config configs/demo.yaml --output data/raw/demo_split
+```
+
+自动读取配置中的 `text_col`、`label_col`、`label_mapping`，并以 `train_path` 作为输入源。
+
+**完整模式**：手动指定所有参数：
+
+```bash
+atomlora split \
+  --input data/raw/demo/demo_raw.jsonl \
+  --output data/raw/demo_split \
+  --text-col content \
+  --label-col status \
+  --train-ratio 0.8 \
+  --dev-ratio 0.1 \
+  --test-ratio 0.1 \
+  --seed 42 \
+  --stratify
+```
+
+**参数说明**：
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--config` | 否 | - | YAML 配置路径（读取 text_col、label_col 等） |
+| `--input` | 否* | 来自 config | 输入 JSONL 文件路径 |
+| `--output` | 否 | 与 input 同目录 | 输出目录 |
+| `--text-col` | 否* | 来自 config | 文本字段名 |
+| `--label-col` | 否* | 来自 config | 标签字段名 |
+| `--train-ratio` | 否 | 0.8 | 训练集比例 |
+| `--dev-ratio` | 否 | 0.1 | 验证集比例 |
+| `--test-ratio` | 否 | 0.1 | 测试集比例 |
+| `--seed` | 否 | 42 | 随机种子 |
+| `--stratify` | 否 | True | 是否按标签分层采样 |
+| `--no-stratify` | 否 | - | 关闭分层采样 |
+
+> *使用 `--config` 时，`--input`、`--text-col`、`--label-col` 可省略。
+
+**输出文件**：
+
+```
+data/raw/demo_split/
+├── demo_train.jsonl          # 训练集
+├── demo_dev.jsonl            # 验证集
+├── demo_test.jsonl           # 测试集
+├── split_report.json         # 切分报告（样本数、标签分布）
+└── config.generated.yaml     # 自动生成的配置文件，可直接用于训练
+```
+
+`config.generated.yaml` 包含 `train_path`、`dev_path`、`test_path`、`text_col`、`label_col`、`label_mapping`，可直接传给 `atomlora train`。
+
+### atomlora doctor-data
+
+对 train / dev / test 数据集做全面质量检查，输出 JSON + Markdown 报告。
+
+```bash
+atomlora doctor-data --config configs/demo.yaml
+
+# 严格模式：有 ERROR 级别问题时 exit 1（适合 CI）
+atomlora doctor-data --config configs/demo.yaml --strict
+```
+
+**检查项与严重级别**：
+
+| 检查项 | 级别 | 说明 |
+|--------|------|------|
+| `sample_counts` | INFO | 各 split 样本数 |
+| `label_distribution` | INFO | 各 split 标签分布 |
+| `missing_classes` | ERROR/WARNING | train 缺类别为 ERROR，dev/test 为 WARNING |
+| `empty_text` | ERROR | 空文本记录 |
+| `empty_label` | ERROR | 空标签记录 |
+| `unknown_labels` | WARNING | 标签值不在 label_mapping 中 |
+| `duplicate_content` | WARNING | 重复文本（含 Top 5 样例） |
+| `low_count_classes` | WARNING | 某类样本数低于阈值（默认 10） |
+| `label_ratio_drift` | WARNING | train/dev/test 标签比例偏移 > 10% |
+| `text_length_stats` | INFO | 文本长度 min/avg/p50/p95/max |
+
+**输出文件**（写入 `outputs/{exp_id}/`）：
+
+```
+outputs/demo_single_cls/
+├── dataset_report.json       # 结构化报告
+└── dataset_report.md         # Markdown 报告（含 Top 重复样本）
+```
+
+**输出示例**：
+
+```
+==================================================
+[WARNING] 数据诊断完成
+  WARNING (2):
+    [duplicate_content] 存在重复文本 (within: 44, cross: 64)
+    [low_count_classes] 部分类别样本数低于阈值 10
+  INFO (8)
+报告: outputs/demo_single_cls/dataset_report.json
+==================================================
+```
+
+### 推荐工作流
+
+```
+原始数据 (raw.jsonl)
+    │
+    ▼
+  atomlora split          ← 切分 + 自动生成 config
+    │
+    ▼
+  atomlora doctor-data    ← 质量检查
+    │
+    ▼
+  atomlora train          ← 训练
+    │
+    ▼
+  atomlora eval / predict / serve
+```
 
 ---
 
