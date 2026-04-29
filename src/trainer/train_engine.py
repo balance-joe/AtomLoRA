@@ -1,10 +1,12 @@
 import os
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-from transformers import get_linear_schedule_with_warmup
+from transformers import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
 from src.utils.logger import get_logger
+from src.utils.device import resolve_device
 from src.trainer.metric_manager import MetricManager
 from src.eval.runner import run_evaluation
 from src.utils.paths import (
@@ -21,7 +23,7 @@ class Trainer:
         self.dev_loader = dev_loader
         self.tokenizer = tokenizer # 需要保存 tokenizer
         
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = resolve_device(config)
         self.model.to(self.device)
         
         # 输出路径
@@ -76,19 +78,39 @@ class Trainer:
                 "weight_decay": 0.001
             })
             
+        summary = self.model.get_trainable_parameter_summary()
+        trainable_pct = (summary["trainable"] / summary["all"] * 100.0) if summary["all"] else 0.0
+        self.logger.info(
+            "可训练参数: backbone=%d | lora=%d | classifier=%d | total_trainable=%d / all=%d (%.4f%%)",
+            summary["backbone"],
+            summary["lora"],
+            summary["classifier"],
+            summary["trainable"],
+            summary["all"],
+            trainable_pct,
+        )
         self.logger.info(f"优化器组: LoRA({len(lora_params)}), Clf({len(classifier_params)}), Bert({len(bert_params)})")
         return torch.optim.AdamW(optimizer_grouped_parameters)
 
     def _build_scheduler(self):
         num_epochs = self.config["train"]["num_epochs"]
         grad_accum = self.config["train"].get("gradient_accumulation_steps", 1)
-        total_steps = len(self.train_loader) * num_epochs // grad_accum
+        steps_per_epoch = math.ceil(len(self.train_loader) / grad_accum)
+        total_steps = steps_per_epoch * num_epochs
         warmup_ratio = self.config["train"].get("warmup_ratio", 0.1)
+        scheduler_type = self.config["train"].get("scheduler_type", "linear")
+        num_warmup_steps = int(total_steps * warmup_ratio)
 
+        if scheduler_type == "cosine":
+            return get_cosine_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=total_steps,
+            )
         return get_linear_schedule_with_warmup(
             self.optimizer,
-            num_warmup_steps=int(total_steps * warmup_ratio),
-            num_training_steps=total_steps
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=total_steps,
         )
 
     def _log_training_monitor(self, step, logits_dict, labels):
@@ -129,6 +151,10 @@ class Trainer:
         best_metrics = {}
         global_step = 0
         monitor_interval = self.config["train"].get("monitor_interval", 100)
+        early_stopping = self.config["train"].get("early_stopping", {})
+        patience = early_stopping.get("patience")
+        monitor_metric = early_stopping.get("metric", "main_score")
+        epochs_without_improvement = 0
 
         self.logger.info("开始训练...")
 
@@ -191,12 +217,23 @@ class Trainer:
             self.logger.info(log_msg)
             
             # 保存最优模型
-            current_score = metrics["main_score"]
+            current_score = metrics.get(monitor_metric, metrics["main_score"])
             if current_score > best_score:
                 best_score = current_score
                 best_metrics = metrics
+                epochs_without_improvement = 0
                 self.save_model()
                 self.logger.info(f">>> 新模型诞生! 分数: {best_score:.4f}")
+            else:
+                epochs_without_improvement += 1
+                if patience and epochs_without_improvement >= patience:
+                    self.logger.info(
+                        "早停触发: metric=%s patience=%d best=%.4f",
+                        monitor_metric,
+                        patience,
+                        best_score,
+                    )
+                    break
 
         # 训练结束后保存最优指标
         save_metrics(best_metrics, self.output_dir)

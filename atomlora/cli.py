@@ -12,37 +12,22 @@ if hasattr(sys.stdout, 'reconfigure'):
         pass
 
 
-def _resolve_config(config_path: str) -> str:
-    """Resolve --config argument. Supports 'latest' shorthand."""
-    if config_path == "latest":
-        resolved = os.path.join("outputs", "latest", "config.yaml")
-        if not os.path.exists(resolved):
-            raise FileNotFoundError(
-                "outputs/latest/config.yaml 不存在。请先运行一次训练。"
-            )
-        return resolved
-    return config_path
-
-
 def cmd_train(args):
-    args.config = _resolve_config(args.config)
     from atomlora.engine import main
     main(args.config)
 
 
 def cmd_eval(args):
-    args.config = _resolve_config(args.config)
     from atomlora.engine import evaluate
-    evaluate(args.config)
+    evaluate(args.config, data_path=args.data_path)
 
 
 def cmd_predict(args):
-    args.config = _resolve_config(args.config)
     from src.config.parser import parse_config
     from src.utils.logger import init_logger
     from src.predict.predictor import TextAuditPredictor
 
-    config = parse_config(args.config)
+    config = parse_config(args.config, mode="predict")
     init_logger(config["exp_id"], config["task_type"])
 
     predictor = TextAuditPredictor(config=config)
@@ -81,10 +66,16 @@ def _friendly_error(e: Exception, config_path: str = None):
 
 
 def cmd_serve(args):
-    args.config = _resolve_config(args.config)
     import uvicorn
-    # 传递配置文件路径，让 API 服务直接加载指定配置
-    os.environ["ATOMLORA_SERVE_CONFIG"] = os.path.abspath(args.config)
+    from src.config.parser import parse_config, resolve_runtime_config_path
+    from src.utils.device import resolve_device
+
+    config = parse_config(args.config, mode="serve")
+    device = resolve_device(config)
+    if args.reload and device.type == "cuda":
+        raise ValueError("GPU 推理服务不支持 --reload，请使用单进程模式启动。")
+
+    os.environ["ATOMLORA_SERVE_CONFIG"] = resolve_runtime_config_path(args.config, mode="serve")
     uvicorn.run("api.app:app", host=args.host, port=args.port, reload=args.reload)
 
 
@@ -103,6 +94,7 @@ def main():
     # eval
     p_eval = sub.add_parser("eval", help="Evaluate a trained model")
     p_eval.add_argument("--config", required=True, help="YAML config path")
+    p_eval.add_argument("--data-path", help="Optional evaluation dataset path")
     p_eval.set_defaults(func=cmd_eval)
 
     # predict

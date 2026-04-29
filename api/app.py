@@ -19,7 +19,7 @@ def _load_default_model():
     if serve_config:
         try:
             from src.config.parser import parse_config
-            config = parse_config(serve_config)
+            config = parse_config(serve_config, mode="serve")
             model_name = config["exp_id"]
             with gpu_lock:
                 model_manager.load_model(model_name, config_path=serve_config)
@@ -71,7 +71,7 @@ async def load_model(request: Request):
 
     try:
         from src.config.parser import parse_config
-        config = parse_config(config_path)
+        config = parse_config(config_path, mode="serve")
         model_name = config["exp_id"]
         with gpu_lock:
             model_manager.load_model(model_name, config_path=config_path)
@@ -98,11 +98,11 @@ async def predict(request: Request):
     if not sample or not isinstance(sample, dict):
         return error("sample 必填且必须是对象")
 
-    content = sample.get("content")
-    if not content or not isinstance(content, str):
-        return error("sample.content 必填且必须是字符串")
-
     try:
+        text_col = model_manager.get_text_col(model_name)
+        content = sample.get(text_col)
+        if not content or not isinstance(content, str):
+            return error(f"sample.{text_col} 必填且必须是字符串")
         with gpu_lock:
             result = model_manager.predict(
                 model_name=model_name,

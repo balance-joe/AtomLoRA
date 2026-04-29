@@ -11,8 +11,9 @@ if hasattr(sys.stdout, 'reconfigure'):
 from peft import PeftModel
 from transformers import AutoTokenizer, AutoModel
 from src.utils.logger import get_logger
+from src.utils.device import resolve_device
 from src.trainer.metric_manager import MetricManager
-from src.model.model_factory import TaskTextClassifier
+from src.model.model_factory import TaskTextClassifier, _resolve_model_path
 from src.data.data_processor import load_dataset
 from src.model.text_dataset import create_dataloader
 from src.eval.runner import run_evaluation
@@ -23,7 +24,7 @@ class Evaluator:
     def __init__(self, config):
         self.config = config
         self.logger = get_logger(config["exp_id"])
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = resolve_device(config)
 
         self.metric_manager = MetricManager(config)
 
@@ -42,9 +43,10 @@ class Evaluator:
     def _load_model(self):
         model_arch = self.config["model"]["arch"]
         model_path = self.config["model"].get("path", model_arch)
+        resolved_path = _resolve_model_path(model_path, self.logger)
 
         base_model = AutoModel.from_pretrained(
-            model_path,
+            resolved_path,
             output_hidden_states=True
         )
 
@@ -52,13 +54,12 @@ class Evaluator:
         if len(self.tokenizer) > base_model.config.vocab_size:
             base_model.resize_token_embeddings(len(self.tokenizer))
 
-        self.bert = PeftModel.from_pretrained(
-            base_model,
-            self.lora_path
-        )
-
-        self.model = TaskTextClassifier(self.config, self.tokenizer)
-        self.model.bert = self.bert
+        lora_enabled = self.config["model"].get("lora", {}).get("enabled", True)
+        if lora_enabled:
+            self.bert = PeftModel.from_pretrained(base_model, self.lora_path)
+        else:
+            self.bert = base_model
+        self.model = TaskTextClassifier(self.config, self.tokenizer, backbone=self.bert)
 
         self.model.classifiers.load_state_dict(
             torch.load(self.clf_path, map_location="cpu")
@@ -70,6 +71,8 @@ class Evaluator:
         self.logger.info("Model + LoRA + classifier loaded")
 
     def evaluate(self, data_path):
+        if not data_path:
+            raise ValueError("评估缺少 data_path，请在配置中提供 data.dev_path 或显式传入路径")
         data = load_dataset(self.config, data_path, self.tokenizer)
         loader = create_dataloader(
             data,

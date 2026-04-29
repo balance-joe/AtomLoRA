@@ -1,88 +1,141 @@
-# src/config/parser.py
 import os
+import copy
 import yaml
-from typing import Dict, Any
-# 假设 utils.logger 存在，这里为了独立运行暂时使用 print 或标准 logging
 import logging
+from typing import Dict, Any, Optional
+
 logger = logging.getLogger(__name__)
 
-CONFIG_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "configs")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+CONFIG_ROOT = os.path.join(PROJECT_ROOT, "configs")
+OUTPUTS_ROOT = os.path.join(PROJECT_ROOT, "outputs")
+RUNTIME_MODES = {"train", "eval", "predict", "serve"}
 
-# --- 1. 修正字段定义，与YAML对齐 ---
-REQUIRED_FIELDS = {
-    "basic": ["exp_id", "task_type"],
-    # 支持 train_path 或 raw_data_path
-    "data": ["max_len"], 
-    "model": ["arch"], # freeze_bert 设为可选，默认为 False
-    "train": ["num_epochs", "batch_size"]
-}
 
-TASK_REQUIRED_FIELDS = {
-    # 移除 label_mapping 的强校验，改为校验 label_subset 或 label_mapping 存在其一即可
-    "single_cls": [], 
-    "multi_cls": ["train.multi_cls"]
-}
+def resolve_saved_config_path(exp_id: str) -> str:
+    return os.path.join(OUTPUTS_ROOT, exp_id, "config.yaml")
+
+
+def resolve_config_path(config_path: str) -> str:
+    """Resolve a config reference from CWD/configs/templates/outputs/latest."""
+    if not config_path:
+        raise ValueError("config_path 不能为空")
+
+    if config_path == "latest":
+        latest_link = os.path.join(OUTPUTS_ROOT, "latest", "config.yaml")
+        if os.path.exists(latest_link):
+            return latest_link
+
+        latest_txt = os.path.join(OUTPUTS_ROOT, "latest.txt")
+        if os.path.exists(latest_txt):
+            with open(latest_txt, "r", encoding="utf-8") as f:
+                exp_dir = f.read().strip()
+            if not exp_dir:
+                raise FileNotFoundError("outputs/latest.txt 为空，无法解析 latest 实验")
+            latest_config = os.path.join(exp_dir, "config.yaml")
+            if os.path.exists(latest_config):
+                return latest_config
+            raise FileNotFoundError(f"latest.txt 指向的配置不存在: {latest_config}")
+
+        raise FileNotFoundError("未找到 outputs/latest/config.yaml 或 outputs/latest.txt")
+
+    path = os.path.normpath(config_path)
+    if os.path.isabs(path):
+        if os.path.exists(path):
+            return path
+        raise FileNotFoundError(f"Config file not found: {path}")
+
+    abs_path = os.path.abspath(path)
+    if os.path.exists(abs_path):
+        return abs_path
+
+    for base in (CONFIG_ROOT, os.path.join(CONFIG_ROOT, "templates")):
+        candidate = os.path.normpath(os.path.join(base, path))
+        if os.path.exists(candidate):
+            return candidate
+
+    raise FileNotFoundError(f"Config file not found: {os.path.abspath(path)}")
+
+
+def resolve_runtime_config_path(config_path: str, mode: str = "train") -> str:
+    """Resolve the config file that should define runtime semantics."""
+    resolved = resolve_config_path(config_path)
+    if mode not in {"eval", "predict", "serve"}:
+        return resolved
+
+    # If the caller already points at a saved experiment config, trust it.
+    if os.path.basename(resolved) == "config.yaml" and os.path.basename(os.path.dirname(resolved)) != "configs":
+        return resolved
+
+    raw_config = _load_yaml(resolved)
+    exp_id = raw_config.get("exp_id")
+    if not exp_id:
+        raise ValueError(f"[CONFIG] {resolved} 缺少 exp_id，无法定位实验产物")
+
+    saved_config = resolve_saved_config_path(exp_id)
+    if os.path.exists(saved_config):
+        return saved_config
+
+    return resolved
+
+
+def _load_yaml(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    if not isinstance(config, dict):
+        raise ValueError(f"[CONFIG] 配置文件必须解析为 dict: {path}")
+    return config
+
 
 class ConfigParser:
-    def __init__(self, config_path: str):
-        self.config_path = self._resolve_abs_path(config_path)
+    def __init__(
+        self,
+        config_path: str,
+        mode: str = "train",
+        runtime_overrides: Optional[Dict[str, Any]] = None,
+        eval_data_path: Optional[str] = None,
+    ):
+        if mode not in RUNTIME_MODES:
+            raise ValueError(f"不支持的配置解析模式: {mode}")
+        self.mode = mode
+        self.requested_config_path = resolve_config_path(config_path)
+        self.config_path = resolve_runtime_config_path(config_path, mode=mode)
         self.raw_config: Dict[str, Any] = {}
         self.final_config: Dict[str, Any] = {}
-        self.loaded_configs = {}
+        self.loaded_configs: Dict[str, Dict[str, Any]] = {}
+        self.runtime_overrides = runtime_overrides or {}
+        self.eval_data_path = eval_data_path
 
     def parse(self) -> Dict[str, Any]:
-        # 1. 加载
         self.raw_config = self._load_single_config(self.config_path)
-        # 2. 继承
         self.final_config = self._handle_inheritance(self.raw_config)
-        # 3. 变量替换
         self.final_config = self._replace_variables(self.final_config)
-        
-        # --- 新增步骤：标准化字段名 (解决 train_path vs raw_data_path) ---
         self._normalize_field_names()
-        
-        # --- 新增步骤：自动生成映射 (解决 label_mapping 缺失问题) ---
         self._generate_label_mapping()
-        
-        # 4. 验证
+        self._apply_runtime_overrides()
         self._validate_config()
-        # 5. 适配结构
         self._adapt_task_type()
-        
-        logger.info(f"配置集成完毕: {self.final_config.get('exp_id')}")
+        logger.info(
+            "配置集成完毕: exp_id=%s mode=%s source=%s",
+            self.final_config.get("exp_id"),
+            self.mode,
+            self.config_path,
+        )
         return self.final_config
 
-    def _resolve_abs_path(self, config_path: str) -> str:
-        path = os.path.normpath(config_path)
-        # Case 1: absolute path → use directly
-        if os.path.isabs(path):
-            if os.path.exists(path):
-                return path
-            raise FileNotFoundError(f"Config file not found: {path}")
-        # Case 2: relative path → try CWD-based first
-        abs_path = os.path.abspath(path)
-        if os.path.exists(abs_path):
-            return abs_path
-        # Case 3: fall back to CONFIG_ROOT (handles templates/bert_lora_template.yaml etc.)
-        for base in (CONFIG_ROOT, os.path.join(CONFIG_ROOT, "templates")):
-            candidate = os.path.normpath(os.path.join(base, path))
-            if os.path.exists(candidate):
-                return candidate
-        raise FileNotFoundError(f"Config file not found: {os.path.abspath(path)}")
-
     def _load_single_config(self, config_path: str) -> Dict[str, Any]:
-        if config_path in self.loaded_configs: return self.loaded_configs[config_path]
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
+        if config_path in self.loaded_configs:
+            return self.loaded_configs[config_path]
+        config = _load_yaml(config_path)
         self.loaded_configs[config_path] = config
         return config
 
     def _handle_inheritance(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        if "base_config" not in config or not config["base_config"]:
+        if not config.get("base_config"):
             return config.copy()
-        parent_path = config["base_config"]
-        # 递归加载父配置
-        parent_config = self._handle_inheritance(self._load_single_config(self._resolve_abs_path(parent_path)))
+
+        parent_path = resolve_config_path(config["base_config"])
+        parent_config = self._handle_inheritance(self._load_single_config(parent_path))
         merged = self._deep_merge(parent_config, config)
         merged.pop("base_config", None)
         return merged
@@ -90,19 +143,19 @@ class ConfigParser:
     def _deep_merge(self, parent: Dict[str, Any], child: Dict[str, Any]) -> Dict[str, Any]:
         merged = parent.copy()
         for key, value in child.items():
-            if isinstance(value, dict) and key in merged and isinstance(merged[key], dict):
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
                 merged[key] = self._deep_merge(merged[key], value)
             else:
                 merged[key] = value
         return merged
 
     def _replace_variables(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """将配置中的 ${VAR_NAME} 占位符替换为全局变量值。"""
         import json as _json
-        global_path = os.path.join(CONFIG_ROOT, "../data/global_label_map.json")
+
+        global_path = os.path.join(PROJECT_ROOT, "data", "global_label_map.json")
         global_labels = {}
         if os.path.exists(global_path):
-            with open(global_path, 'r', encoding='utf-8') as f:
+            with open(global_path, "r", encoding="utf-8") as f:
                 global_labels = _json.load(f)
 
         if not global_labels:
@@ -113,144 +166,245 @@ class ConfigParser:
                 for key, val in global_labels.items():
                     obj = obj.replace(f"${{{key}}}", str(val))
                 return obj
-            elif isinstance(obj, dict):
+            if isinstance(obj, dict):
                 return {k: _walk(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
+            if isinstance(obj, list):
                 return [_walk(v) for v in obj]
             return obj
 
         return _walk(config)
 
     def _normalize_field_names(self):
-        """标准化字段名，处理不同别名"""
-        data = self.final_config.get("data", {})
-        # 兼容 raw_data_path -> train_path
+        data = self.final_config.setdefault("data", {})
         if "raw_data_path" in data and "train_path" not in data:
             data["train_path"] = data.pop("raw_data_path")
-        
-        train = self.final_config.get("train", {})
-        # 兼容 learning_rate -> lora_lr
+
+        if isinstance(data.get("label_col"), str) and self.final_config.get("task_type") == "single_cls":
+            data["label_col"] = {"default": data["label_col"]}
+
+        train = self.final_config.setdefault("train", {})
         if "learning_rate" in train and "lora_lr" not in train:
             train["lora_lr"] = train.pop("learning_rate")
+
+        optimizer = train.setdefault("optimizer", {})
+        groups = optimizer.setdefault("groups", {})
+
+        if "lora_lr" in train and "lora" not in groups:
+            groups["lora"] = train["lora_lr"]
+        if "classifier_lr" in train and "classifier" not in groups:
+            groups["classifier"] = train["classifier_lr"]
+        if "bert_lr" in train and "bert" not in groups:
+            groups["bert"] = train["bert_lr"]
+
+    def _apply_runtime_overrides(self):
+        if self.mode in {"eval", "predict", "serve"}:
+            file_overrides = self._extract_runtime_overrides_from_requested_config()
+            if file_overrides:
+                self.final_config = self._deep_merge(self.final_config, file_overrides)
+
+        if self.runtime_overrides:
+            self.final_config = self._deep_merge(self.final_config, self.runtime_overrides)
+
+    def _extract_runtime_overrides_from_requested_config(self) -> Dict[str, Any]:
+        if self.requested_config_path == self.config_path:
+            return {}
+        if self._is_saved_experiment_config(self.requested_config_path):
+            return {}
+
+        requested_config = self._load_single_config(self.requested_config_path)
+        overrides: Dict[str, Any] = {}
+
+        resources = requested_config.get("resources")
+        if isinstance(resources, dict):
+            overrides["resources"] = copy.deepcopy(resources)
+
+        train = requested_config.get("train")
+        if isinstance(train, dict):
+            train_overrides = {}
+            if "batch_size" in train:
+                train_overrides["batch_size"] = train["batch_size"]
+            if train_overrides:
+                overrides["train"] = train_overrides
+
+        return overrides
+
+    def _is_saved_experiment_config(self, path: str) -> bool:
+        normalized = os.path.normpath(path)
+        outputs_root = os.path.normpath(OUTPUTS_ROOT)
+        return os.path.basename(normalized) == "config.yaml" and normalized.startswith(outputs_root)
 
     def _generate_label_mapping(self):
         data = self.final_config.get("data", {})
         task_type = self.final_config.get("task_type", "single_cls")
 
         if "label_mapping" in data:
-            return  # 已手动配置，无需生成
-
+            return
         if "label_subset" not in data:
-            return  # 没有 subset，稍后 validate 会报错
+            return
 
         subset = data["label_subset"]
-
         if task_type == "single_cls":
-            # 单任务：统一生成 {task_name: {int: str}} 嵌套格式
             if isinstance(subset, list):
-                mapping = {idx: label for idx, label in enumerate(subset)}
-                # 从 label_col 取 task_name，保证嵌套结构
                 label_col = data.get("label_col", {})
-                if isinstance(label_col, dict):
-                    task_name = next(iter(label_col.keys()))
-                else:
-                    # label_col 是字符串时，用 label_mapping 或固定 "default"
-                    task_name = next(iter(data.get("label_mapping", {}).keys()), "default") \
-                        if "label_mapping" in data else "default"
-                data["label_mapping"] = {task_name: mapping}
+                task_name = next(iter(label_col.keys())) if isinstance(label_col, dict) and label_col else "default"
+                data["label_mapping"] = {
+                    task_name: {idx: label for idx, label in enumerate(subset)}
+                }
             elif isinstance(subset, dict):
                 data["label_mapping"] = {
                     task_name: {idx: label for idx, label in enumerate(labels)}
                     for task_name, labels in subset.items()
                 }
-            
         elif task_type == "multi_cls":
-            # 多任务：{task: [labels]} -> {task: {int: str}}
             data["label_mapping"] = {
                 task_name: {idx: label for idx, label in enumerate(labels)}
                 for task_name, labels in subset.items()
             }
-        
-        logger.info(f"从标签子集自动生成的标签映射 {task_type}")
 
     def _validate_config(self):
-        # 1. 基础字段
-        for field in REQUIRED_FIELDS["basic"]:
-            if field not in self.final_config:
-                raise ValueError(
-                    f"[CONFIG] 缺少必填字段 '{field}'。"
-                    f"请在配置文件顶层添加 {field}: <value>"
-                )
+        config = self.final_config
+        self._require_top_level_fields(config)
+        self._validate_task_type(config)
+        self._validate_data_contract(config)
+        self._validate_model_contract(config)
+        self._validate_train_contract(config)
 
-        # 2. task_type 合法值
+        if self.mode in {"eval", "predict", "serve"}:
+            self._validate_artifact_contract(config)
+
+    def _require_top_level_fields(self, config: Dict[str, Any]):
+        for field in ("exp_id", "task_type"):
+            if field not in config:
+                raise ValueError(f"[CONFIG] 缺少必填字段 '{field}'")
+
+    def _validate_task_type(self, config: Dict[str, Any]):
         valid_task_types = ("single_cls", "multi_cls")
-        if self.final_config["task_type"] not in valid_task_types:
+        if config["task_type"] not in valid_task_types:
             raise ValueError(
-                f"[CONFIG] task_type='{self.final_config['task_type']}' 不合法，"
-                f"必须是 {valid_task_types}"
+                f"[CONFIG] task_type='{config['task_type']}' 不合法，必须是 {valid_task_types}"
             )
 
-        # 3. 检查数据路径
-        for path_key in ["train_path", "dev_path"]:
-            if path_key not in self.final_config.get("data", {}):
-                raise ValueError(
-                    f"[CONFIG] 缺少 data.{path_key}。"
-                    f"请指定训练/验证数据的 JSONL 文件路径"
-                )
+    def _validate_data_contract(self, config: Dict[str, Any]):
+        data = config.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("[CONFIG] data 必须是字典")
 
-        # 4. 检查数据文件是否存在
-        for path_key in ["train_path", "dev_path"]:
-            data_path = self.final_config["data"][path_key]
-            if not os.path.isabs(data_path):
-                # 相对路径：相对于项目根目录（CONFIG_ROOT 的父目录）
-                project_root = os.path.dirname(CONFIG_ROOT)
-                resolved = os.path.normpath(os.path.join(project_root, data_path))
+        if "max_len" not in data:
+            raise ValueError("[CONFIG] 缺少 data.max_len")
+        if "text_col" not in data or not isinstance(data["text_col"], str):
+            raise ValueError("[CONFIG] 缺少 data.text_col，且必须是字符串")
+
+        label_col = data.get("label_col")
+        label_mapping = data.get("label_mapping")
+        if label_col is None:
+            raise ValueError("[CONFIG] 缺少 data.label_col")
+        if label_mapping is None:
+            raise ValueError("[CONFIG] 缺少 data.label_mapping 或 data.label_subset")
+
+        if config["task_type"] == "multi_cls" and not isinstance(label_col, dict):
+            raise ValueError("[CONFIG] multi_cls 任务要求 data.label_col 为字典")
+
+        if self.mode == "train":
+            for path_key in ("train_path", "dev_path"):
+                if path_key not in data:
+                    raise ValueError(f"[CONFIG] 缺少 data.{path_key}")
+                self._validate_existing_path(data[path_key], field_name=f"data.{path_key}")
+
+        if self.mode == "eval":
+            if self.eval_data_path:
+                self._validate_existing_path(self.eval_data_path, field_name="eval.data_path")
             else:
-                resolved = data_path
-            if not os.path.exists(resolved):
-                raise FileNotFoundError(
-                    f"[CONFIG] 数据文件不存在: {data_path}\n"
-                    f"  解析为: {os.path.abspath(resolved)}"
-                )
+                dev_path = data.get("dev_path")
+                if dev_path:
+                    self._validate_existing_path(dev_path, field_name="data.dev_path")
 
-        # 5. 检查 label_mapping
-        if "label_mapping" not in self.final_config.get("data", {}):
+    def _validate_model_contract(self, config: Dict[str, Any]):
+        model = config.get("model")
+        if not isinstance(model, dict):
+            raise ValueError("[CONFIG] model 必须是字典")
+        if "arch" not in model:
+            raise ValueError("[CONFIG] 缺少 model.arch")
+
+        lora_conf = model.get("lora", {})
+        if lora_conf and not isinstance(lora_conf, dict):
+            raise ValueError("[CONFIG] model.lora 必须是字典")
+
+    def _validate_train_contract(self, config: Dict[str, Any]):
+        train = config.get("train")
+        if not isinstance(train, dict):
+            raise ValueError("[CONFIG] train 必须是字典")
+
+        if "batch_size" not in train:
+            raise ValueError("[CONFIG] 缺少 train.batch_size")
+
+        scheduler_type = train.get("scheduler_type", "linear")
+        if scheduler_type not in {"linear", "cosine"}:
+            raise ValueError("[CONFIG] train.scheduler_type 仅支持 linear / cosine")
+
+        early_stopping = train.get("early_stopping")
+        if early_stopping is not None:
+            if not isinstance(early_stopping, dict):
+                raise ValueError("[CONFIG] train.early_stopping 必须是字典")
+            patience = early_stopping.get("patience")
+            if patience is not None and (not isinstance(patience, int) or patience < 1):
+                raise ValueError("[CONFIG] train.early_stopping.patience 必须是正整数")
+
+        if self.mode != "train":
+            return
+
+        if "num_epochs" not in train:
+            raise ValueError("[CONFIG] 缺少 train.num_epochs")
+
+        optimizer_groups = train.get("optimizer", {}).get("groups", {})
+        required_groups = ("bert", "lora", "classifier")
+        missing = [name for name in required_groups if name not in optimizer_groups]
+        if missing:
             raise ValueError(
-                "[CONFIG] 缺少 data.label_mapping 或 data.label_subset。\n"
-                "  请至少指定其中一个，例如:\n"
-                "    label_subset:\n"
-                "      status: [0, 1]\n"
-                "  或:\n"
-                "    label_mapping:\n"
-                "      status: {0: '正确', 1: '错误'}"
+                f"[CONFIG] 缺少 train.optimizer.groups.{', '.join(missing)}"
             )
 
-        # 6. 双任务检查
-        if self.final_config["task_type"] == "multi_cls":
-            if "loss_weight" not in self.final_config.get("train", {}):
-                raise ValueError(
-                    "[CONFIG] multi_cls 任务需要 train.loss_weight 配置。\n"
-                    "  例如: loss_weight: [1.0, 1.0]"
-                )
+    def _validate_artifact_contract(self, config: Dict[str, Any]):
+        exp_id = config["exp_id"]
+        exp_dir = os.path.join(OUTPUTS_ROOT, exp_id)
+        if not os.path.isdir(exp_dir):
+            raise FileNotFoundError(
+                f"[CONFIG] 实验产物目录不存在: {exp_dir}\n"
+                "  请先完成训练，或传入正确的实验配置"
+            )
+
+    def _validate_existing_path(self, path_value: str, field_name: str):
+        resolved = path_value if os.path.isabs(path_value) else os.path.normpath(os.path.join(PROJECT_ROOT, path_value))
+        if not os.path.exists(resolved):
+            raise FileNotFoundError(
+                f"[CONFIG] {field_name} 指向的文件不存在: {path_value}\n"
+                f"  解析为: {os.path.abspath(resolved)}"
+            )
 
     def _adapt_task_type(self):
-        # 逻辑保持您原有的，但现在 label_mapping 肯定存在了
         task_type = self.final_config["task_type"]
         data_config = self.final_config["data"]
-        
-        if task_type == "single_cls":
-            self.final_config["data"]["label_key"] = data_config.get("label_col", "label")
-            self.final_config["data"]["label_map"] = data_config["label_mapping"]
-        elif task_type == "multi_cls":
-            # 确保 label_col 是字典
-            if not isinstance(data_config.get("label_col"), dict):
-                 raise ValueError("For multi_cls, data.label_col must be a dict mapping task_name -> col_name")
-            
-            task_names = list(data_config["label_col"].keys())
-            self.final_config["data"]["task_names"] = task_names
-            # 这里直接取 mapping，因为 _generate_label_mapping 已经处理好了结构
-            self.final_config["data"]["label_maps"] = data_config["label_mapping"]
-            self.final_config["data"]["label_cols"] = data_config["label_col"]
 
-def parse_config(config_path):
-    return ConfigParser(config_path).parse()
+        if task_type == "single_cls":
+            label_col = data_config.get("label_col", {})
+            label_key = next(iter(label_col.keys())) if isinstance(label_col, dict) else "default"
+            data_config["label_key"] = label_key
+            data_config["label_map"] = data_config["label_mapping"]
+        else:
+            task_names = list(data_config["label_col"].keys())
+            data_config["task_names"] = task_names
+            data_config["label_maps"] = data_config["label_mapping"]
+            data_config["label_cols"] = data_config["label_col"]
+
+
+def parse_config(
+    config_path: str,
+    mode: str = "train",
+    runtime_overrides: Optional[Dict[str, Any]] = None,
+    eval_data_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    return ConfigParser(
+        config_path,
+        mode=mode,
+        runtime_overrides=runtime_overrides,
+        eval_data_path=eval_data_path,
+    ).parse()

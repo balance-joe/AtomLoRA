@@ -21,7 +21,7 @@ from src.predict.predictor import TextAuditPredictor
 
 def batch_predict(config_path, output_path=None):
     """批量预测并导出 CSV"""
-    config = parse_config(config_path)
+    config = parse_config(config_path, mode="predict")
     exp_id = config["exp_id"]
     logger = init_logger(exp_id, config["task_type"])
     logger.info(f"加载配置，文件是 {config_path}")
@@ -62,7 +62,7 @@ if __name__ == "__main__":
 
     if args.text:
         # 单条预测模式
-        config = parse_config(args.config)
+        config = parse_config(args.config, mode="predict")
         init_logger(config["exp_id"], config["task_type"])
         predictor = TextAuditPredictor(config=config)
         text_col = config["data"]["text_col"]

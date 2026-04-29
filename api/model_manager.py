@@ -1,11 +1,9 @@
 import os
 import gc
-import json
 import logging
 from typing import Dict
 
-from api.settings import CONFIGS_ROOT
-from src.config.parser import parse_config
+from src.config.parser import parse_config, resolve_saved_config_path, resolve_runtime_config_path
 from src.predict.predictor import TextAuditPredictor
 from src.utils.logger import init_logger
 
@@ -67,11 +65,13 @@ class ModelManager:
             del self.models[oldest_name]
 
         if config_path is None:
-            config_path = os.path.join(CONFIGS_ROOT, f"{model_name}.yaml")
+            config_path = resolve_saved_config_path(model_name)
+        else:
+            config_path = resolve_runtime_config_path(config_path, mode="serve")
 
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"模型配置不存在: {config_path}")
-        config = parse_config(config_path)
+        config = parse_config(config_path, mode="serve")
 
         exp_id = config["exp_id"]
         logger = init_logger(exp_id, config["task_type"])
@@ -88,6 +88,13 @@ class ModelManager:
         predictor = self.models[model_name]
         result = predictor.predict(sample)
         return result
+
+    def get_text_col(self, model_name: str) -> str:
+        if model_name not in self.models:
+            raise FileNotFoundError(
+                f"模型 '{model_name}' 未加载。请先通过 POST /load 或启动时指定配置加载模型。"
+            )
+        return self.models[model_name].config["data"]["text_col"]
 
     def get_model_info(self, model_name: str) -> dict:
         if model_name not in self.models:
