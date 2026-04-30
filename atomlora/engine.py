@@ -68,4 +68,4 @@ def evaluate(config_path, data_path=None):
     logger.info(f"加载配置，文件是 {config_path}")
     evaluator = Evaluator(config)
     metrics = evaluator.evaluate(data_path or config["data"].get("dev_path"))
-    print(metrics)
+    logger.info(metrics)

@@ -1,13 +1,12 @@
 import os
 import gc
-import logging
 from typing import Dict
 
 from src.config.parser import parse_config, resolve_saved_config_path, resolve_runtime_config_path
 from src.predict.predictor import TextAuditPredictor
-from src.utils.logger import init_logger
+from src.utils.logger import get_logger, init_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 # GPU 显存有限，同时加载多个模型容易 OOM
 MAX_MODELS = int(os.environ.get("ATOMLORA_MAX_MODELS", "1"))

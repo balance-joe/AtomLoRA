@@ -81,13 +81,10 @@ class Trainer:
         summary = self.model.get_trainable_parameter_summary()
         trainable_pct = (summary["trainable"] / summary["all"] * 100.0) if summary["all"] else 0.0
         self.logger.info(
-            "可训练参数: backbone=%d | lora=%d | classifier=%d | total_trainable=%d / all=%d (%.4f%%)",
-            summary["backbone"],
-            summary["lora"],
-            summary["classifier"],
-            summary["trainable"],
-            summary["all"],
-            trainable_pct,
+            f"可训练参数: backbone={summary['backbone']} | "
+            f"lora={summary['lora']} | classifier={summary['classifier']} | "
+            f"total_trainable={summary['trainable']} / all={summary['all']} "
+            f"({trainable_pct:.4f}%)"
         )
         self.logger.info(f"优化器组: LoRA({len(lora_params)}), Clf({len(classifier_params)}), Bert({len(bert_params)})")
         return torch.optim.AdamW(optimizer_grouped_parameters)

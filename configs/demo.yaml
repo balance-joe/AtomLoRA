@@ -44,7 +44,7 @@ model:
     bias: "none"
 
 train:
-  num_epochs: 3
+  num_epochs: 2
   batch_size: 20
   gradient_accumulation_steps: 3
   warmup_ratio: 0.1

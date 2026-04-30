@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
-import logging
 
-logger = logging.getLogger(__name__)
+from src.utils.logger import get_logger
+
+logger = get_logger()
 
 
 def read_jsonl(path: str) -> list[dict]:

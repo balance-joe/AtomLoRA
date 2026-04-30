@@ -3,6 +3,10 @@ import json
 import sys
 import os
 
+from src.utils.logger import get_logger
+
+logger = get_logger()
+
 # Windows 下强制 UTF-8 输出，防止中文日志乱码
 if hasattr(sys.stdout, 'reconfigure'):
     try:
@@ -52,17 +56,17 @@ def _friendly_error(e: Exception, config_path: str = None):
     err_type = type(e).__name__
     err_msg = str(e)
 
-    print(f"\n{'='*50}")
-    print(f"[ERROR] {err_type}: {err_msg}")
+    logger.error(f"\n{'='*50}")
+    logger.error(f"[ERROR] {err_type}: {err_msg}")
 
     # 按异常类型名精确匹配提示
     hint = _ERROR_HINTS.get(err_type)
     if hint:
-        print(f"[HINT] {hint}")
+        logger.error(f"[HINT] {hint}")
 
     if config_path:
-        print(f"[INFO] 配置文件: {config_path}")
-    print(f"{'='*50}\n")
+        logger.error(f"[INFO] 配置文件: {config_path}")
+    logger.error(f"{'='*50}\n")
 
 
 def cmd_serve(args):
@@ -111,10 +115,10 @@ def cmd_split(args):
             output_dir = os.path.dirname(input_path) if input_path else "."
 
     if not input_path:
-        print("[ERROR] 必须指定 --input 或 --config（config 中需有 train_path）")
+        logger.error("[ERROR] 必须指定 --input 或 --config（config 中需有 train_path）")
         sys.exit(1)
     if not text_col or not label_col:
-        print("[ERROR] 必须指定 --text-col 和 --label-col，或通过 --config 提供")
+        logger.error("[ERROR] 必须指定 --text-col 和 --label-col，或通过 --config 提供")
         sys.exit(1)
 
     report = split_data(
@@ -132,14 +136,14 @@ def cmd_split(args):
     )
 
     # Print summary
-    print(f"\n{'='*50}")
-    print(f"[OK] 切分完成 - 共 {report['total_samples']} 条样本")
+    logger.info(f"\n{'='*50}")
+    logger.info(f"[OK] 切分完成 - 共 {report['total_samples']} 条样本")
     for name, info in report["splits"].items():
-        print(f"  {name}: {info['count']} 条 -> {info['path']}")
-    print(f"配置文件: {report['config_path']}")
-    print(f"报告: {os.path.join(os.path.dirname(report['config_path']), 'split_report.json')}")
-    print(f"\n下一步: atomlora train --config {report['config_path']}")
-    print(f"{'='*50}\n")
+        logger.info(f"  {name}: {info['count']} 条 -> {info['path']}")
+    logger.info(f"配置文件: {report['config_path']}")
+    logger.info(f"报告: {os.path.join(os.path.dirname(report['config_path']), 'split_report.json')}")
+    logger.info(f"\n下一步: atomlora train --config {report['config_path']}")
+    logger.info(f"{'='*50}\n")
 
 
 def cmd_doctor(args):
@@ -175,21 +179,21 @@ def cmd_doctor(args):
         f.write(format_report_markdown(report))
 
     # Print summary with severity levels
-    print(f"\n{'='*50}")
+    logger.info(f"\n{'='*50}")
     status_label = {"PASS": "PASS", "WARN": "WARNING", "FAIL": "FAIL"}[report["status"]]
-    print(f"[{status_label}] 数据诊断完成")
+    logger.info(f"[{status_label}] 数据诊断完成")
     if report["errors"]:
-        print(f"  ERROR ({report['error_count']}):")
+        logger.info(f"  ERROR ({report['error_count']}):")
         for e in report["errors"]:
-            print(f"    {e}")
+            logger.info(f"    {e}")
     if report["warnings"]:
-        print(f"  WARNING ({report['warning_count']}):")
+        logger.info(f"  WARNING ({report['warning_count']}):")
         for w in report["warnings"]:
-            print(f"    {w}")
-    print(f"  INFO ({report['info_count']})")
-    print(f"报告: {json_path}")
-    print(f"Markdown: {md_path}")
-    print(f"{'='*50}\n")
+            logger.info(f"    {w}")
+    logger.info(f"  INFO ({report['info_count']})")
+    logger.info(f"报告: {json_path}")
+    logger.info(f"Markdown: {md_path}")
+    logger.info(f"{'='*50}\n")
 
     # --strict mode: exit 1 if any ERROR
     if args.strict and report["error_count"] > 0:

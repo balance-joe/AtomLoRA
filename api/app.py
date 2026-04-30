@@ -6,7 +6,9 @@ from fastapi import FastAPI, Request
 
 from api.model_manager import ModelManager
 from api.util import success, error
+from src.utils.logger import get_logger
 
+logger = get_logger()
 model_manager = ModelManager()
 # 注意：当前仅支持单 worker 模式（uvicorn 默认就是单 worker）
 # 多 worker (--workers N) 时每个进程有独立的 GPU 锁，无法互斥，会导致 OOM
@@ -23,24 +25,24 @@ def _load_default_model():
             model_name = config["exp_id"]
             with gpu_lock:
                 model_manager.load_model(model_name, config_path=serve_config)
-            print(f"默认模型已加载: {model_name} (from {serve_config})")
+            logger.info(f"默认模型已加载: {model_name} (from {serve_config})")
         except FileNotFoundError as e:
-            print(f"[ERROR] 模型或配置文件不存在: {e}")
-            print("[HINT] 请检查配置中的 model.path 和 data 路径是否正确")
+            logger.error(f"[ERROR] 模型或配置文件不存在: {e}")
+            logger.error("[HINT] 请检查配置中的 model.path 和 data 路径是否正确")
         except Exception as e:
-            print(f"[ERROR] 默认模型加载失败: {type(e).__name__}: {e}")
+            logger.error(f"[ERROR] 默认模型加载失败: {type(e).__name__}: {e}")
         return
 
     default_model = os.environ.get("ATOMLORA_DEFAULT_MODEL")
     if not default_model:
-        print("未设置默认模型（通过 atomlora serve --config 或 ATOMLORA_DEFAULT_MODEL 环境变量指定）")
+        logger.info("未设置默认模型（通过 atomlora serve --config 或 ATOMLORA_DEFAULT_MODEL 环境变量指定）")
         return
     try:
         with gpu_lock:
             model_manager.load_model(default_model)
-        print(f"默认模型已加载: {default_model}")
+        logger.info(f"默认模型已加载: {default_model}")
     except Exception as e:
-        print(f"默认模型加载失败: {e}")
+        logger.error(f"默认模型加载失败: {e}")
 
 
 @asynccontextmanager

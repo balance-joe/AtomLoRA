@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import os
 import json
-import logging
 from collections import Counter
 
 from src.data.io import read_jsonl
+from src.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 # Severity levels
 ERROR = "ERROR"
