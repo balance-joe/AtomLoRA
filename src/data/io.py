@@ -1,4 +1,4 @@
-# src/data/io.py
+"""JSONL 文件读写工具"""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,7 @@ logger = get_logger()
 
 
 def read_jsonl(path: str) -> list[dict]:
-    """Read a JSONL file, skipping blank lines and parse errors."""
+    """读取 JSONL 文件，跳过空行和解析失败的行"""
     records = []
     skipped = 0
     with open(path, "r", encoding="utf-8") as f:
@@ -28,7 +28,7 @@ def read_jsonl(path: str) -> list[dict]:
 
 
 def write_jsonl(records: list[dict], path: str) -> None:
-    """Write records to a JSONL file."""
+    """将记录列表写入 JSONL 文件"""
     with open(path, "w", encoding="utf-8") as f:
         for record in records:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")

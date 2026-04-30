@@ -8,23 +8,18 @@ from src.utils.logger import get_logger, init_logger
 
 logger = get_logger()
 
-# GPU 显存有限，同时加载多个模型容易 OOM
+# 同时加载的模型数量上限，防止 GPU 显存不足
 MAX_MODELS = int(os.environ.get("ATOMLORA_MAX_MODELS", "1"))
 
 
 class ModelManager:
-    """
-    负责：
-    - 启动时加载模型
-    - 多模型管理（带数量限制，防止 GPU OOM）
-    - 提供预测入口
-    """
+    """模型生命周期管理：加载、卸载、LRU 淘汰、预测入口"""
 
     def __init__(self):
         self.models: Dict[str, TextAuditPredictor] = {}
 
     def unload_all(self):
-        """释放所有已加载模型的显存（del + gc + empty_cache 三步确保真正释放）"""
+        """释放所有模型显存：先 close，再 del 触发引用计数回收，最后清空 CUDA 缓存"""
         for name, predictor in self.models.items():
             try:
                 predictor.close()
@@ -44,16 +39,11 @@ class ModelManager:
         logger.info("所有模型已卸载，GPU 缓存已释放")
 
     def load_model(self, model_name: str, config_path: str = None):
-        """
-        加载模型。
-        Args:
-            model_name: 模型标识（用 exp_id）
-            config_path: 配置文件路径（优先使用）。若为 None，则从 CONFIGS_ROOT/{model_name}.yaml 查找。
-        """
+        """加载模型，超过上限时按 LRU 淘汰最久未用的模型"""
         if model_name in self.models:
             return
 
-        # 超过上限时淘汰最久未用的模型（LRU）
+        # 超过上限时淘汰最久未用的模型
         while len(self.models) >= MAX_MODELS:
             oldest_name = next(iter(self.models))
             logger.warning(f"模型数量达上限 {MAX_MODELS}，淘汰最久未用模型: {oldest_name}")
@@ -63,6 +53,7 @@ class ModelManager:
                 pass
             del self.models[oldest_name]
 
+        # 未指定配置时从保存的实验目录查找
         if config_path is None:
             config_path = resolve_saved_config_path(model_name)
         else:
@@ -80,6 +71,7 @@ class ModelManager:
         self.models[model_name] = predictor
 
     def predict(self, model_name: str, sample: dict) -> dict:
+        """对单条样本进行预测，返回预测结果"""
         if model_name not in self.models:
             raise FileNotFoundError(
                 f"模型 '{model_name}' 未加载。请先通过 POST /load 或启动时指定配置加载模型。"
@@ -89,6 +81,7 @@ class ModelManager:
         return result
 
     def get_text_col(self, model_name: str) -> str:
+        """获取模型配置中的文本字段名"""
         if model_name not in self.models:
             raise FileNotFoundError(
                 f"模型 '{model_name}' 未加载。请先通过 POST /load 或启动时指定配置加载模型。"
@@ -96,6 +89,7 @@ class ModelManager:
         return self.models[model_name].config["data"]["text_col"]
 
     def get_model_info(self, model_name: str) -> dict:
+        """获取模型详细信息（任务类型、标签映射等）"""
         if model_name not in self.models:
             raise FileNotFoundError(
                 f"模型 '{model_name}' 未加载。请先通过 POST /load 或启动时指定配置加载模型。"

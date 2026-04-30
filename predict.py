@@ -11,7 +11,7 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
-# 确保项目根目录在 sys.path 中
+# 项目根目录加入 sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.config.parser import parse_config
@@ -37,7 +37,7 @@ def batch_predict(config_path, output_path=None):
     logger.info(f"批量预测结果: {json.dumps(batch_results, ensure_ascii=False, indent=2)}")
 
     if batch_results:
-        # 输出路径：优先用参数，否则基于 exp_id 自动生成
+        # 优先用参数指定的路径，否则基于 exp_id 自动生成
         csv_path = output_path or f"outputs/{exp_id}/predictions.csv"
         os.makedirs(os.path.dirname(csv_path), exist_ok=True)
 
@@ -63,7 +63,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.text:
-        # 单条预测模式
         config = parse_config(args.config, mode="predict")
         init_logger(config["exp_id"], config["task_type"])
         predictor = TextAuditPredictor(config=config)
@@ -72,5 +71,4 @@ if __name__ == "__main__":
         print(json.dumps(result, ensure_ascii=False, indent=2))
         predictor.close()
     else:
-        # 批量预测模式
         batch_predict(args.config, args.output)

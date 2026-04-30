@@ -7,7 +7,7 @@ from src.utils.logger import get_logger
 
 logger = get_logger()
 
-# Windows 下强制 UTF-8 输出，防止中文日志乱码
+# Windows 终端默认编码不是 UTF-8，中文日志会乱码，强制切换
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
@@ -17,16 +17,19 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 
 def cmd_train(args):
+    """执行模型训练"""
     from atomlora.engine import main
     main(args.config)
 
 
 def cmd_eval(args):
+    """评估已训练的模型"""
     from atomlora.engine import evaluate
     evaluate(args.config, data_path=args.data_path)
 
 
 def cmd_predict(args):
+    """单条文本预测"""
     from src.config.parser import parse_config
     from src.utils.logger import init_logger
     from src.predict.predictor import TextAuditPredictor
@@ -41,7 +44,7 @@ def cmd_predict(args):
     predictor.close()
 
 
-# 常见错误的用户友好提示（key 精确匹配异常类型名）
+# 异常类型名 → 用户友好的排查建议
 _ERROR_HINTS = {
     "FileNotFoundError": "文件不存在。请检查配置中的路径是否正确，模型是否已下载。",
     "RuntimeError": "运行时错误。如果涉及 CUDA，尝试减小 batch_size 或用 CPU 模式。",
@@ -59,7 +62,6 @@ def _friendly_error(e: Exception, config_path: str = None):
     logger.error(f"\n{'='*50}")
     logger.error(f"[ERROR] {err_type}: {err_msg}")
 
-    # 按异常类型名精确匹配提示
     hint = _ERROR_HINTS.get(err_type)
     if hint:
         logger.error(f"[HINT] {hint}")
@@ -70,6 +72,7 @@ def _friendly_error(e: Exception, config_path: str = None):
 
 
 def cmd_serve(args):
+    """启动 FastAPI 推理服务"""
     import uvicorn
     from src.config.parser import parse_config, resolve_runtime_config_path
     from src.utils.device import resolve_device
@@ -84,9 +87,10 @@ def cmd_serve(args):
 
 
 def cmd_split(args):
+    """切分数据集为 train/dev/test"""
     from src.data.splitter import split_data
 
-    # Support --config mode: read text_col, label_col, label_mapping from config
+    # 支持从配置文件读取字段名，命令行参数优先级更高
     input_path = args.input
     output_dir = args.output
     text_col = args.text_col
@@ -99,7 +103,7 @@ def cmd_split(args):
         config = parse_config(args.config, mode="train")
         data_cfg = config["data"]
         text_col = text_col or data_cfg.get("text_col")
-        # label_col in config is a dict {task: field} or string; we need the raw field name
+        # 配置中 label_col 可能是 {任务名: 字段名} 的字典，需要提取原始字段名
         cfg_label_col = data_cfg.get("label_col")
         if not label_col:
             if isinstance(cfg_label_col, dict):
@@ -108,7 +112,7 @@ def cmd_split(args):
                 label_col = cfg_label_col
         label_mapping = data_cfg.get("label_mapping")
         label_subset = data_cfg.get("label_subset")
-        # If --input not given, use train_path from config as source
+        # 未指定 --input 时，从配置的 train_path 读取源数据
         if not input_path:
             input_path = data_cfg.get("train_path")
         if not output_dir:
@@ -135,7 +139,6 @@ def cmd_split(args):
         label_subset=label_subset,
     )
 
-    # Print summary
     logger.info(f"\n{'='*50}")
     logger.info(f"[OK] 切分完成 - 共 {report['total_samples']} 条样本")
     for name, info in report["splits"].items():
@@ -147,10 +150,11 @@ def cmd_split(args):
 
 
 def cmd_doctor(args):
+    """诊断数据集质量"""
     import yaml as _yaml
     from src.data.doctor import run_doctor, format_report_markdown
 
-    # Try full config parsing first; fall back to raw YAML for minimal configs
+    # 优先用完整配置解析，解析失败时降级为纯 YAML 读取（兼容最小配置）
     try:
         from src.config.parser import parse_config, OUTPUTS_ROOT
         config = parse_config(args.config, mode="train")
@@ -166,7 +170,6 @@ def cmd_doctor(args):
 
     report = run_doctor(config)
 
-    # Write outputs
     output_dir = os.path.join(OUTPUTS_ROOT, exp_id)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -178,7 +181,6 @@ def cmd_doctor(args):
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(format_report_markdown(report))
 
-    # Print summary with severity levels
     logger.info(f"\n{'='*50}")
     status_label = {"PASS": "PASS", "WARN": "WARNING", "FAIL": "FAIL"}[report["status"]]
     logger.info(f"[{status_label}] 数据诊断完成")
@@ -195,7 +197,7 @@ def cmd_doctor(args):
     logger.info(f"Markdown: {md_path}")
     logger.info(f"{'='*50}\n")
 
-    # --strict mode: exit 1 if any ERROR
+    # 严格模式下发现 ERROR 级别问题时退出码为 1
     if args.strict and report["error_count"] > 0:
         sys.exit(1)
 
@@ -207,24 +209,21 @@ def main():
     )
     sub = parser.add_subparsers(dest="command")
 
-    # train
+    # ---- 子命令定义 ----
     p_train = sub.add_parser("train", help="Train a model")
     p_train.add_argument("--config", required=True, help="YAML config path")
     p_train.set_defaults(func=cmd_train)
 
-    # eval
     p_eval = sub.add_parser("eval", help="Evaluate a trained model")
     p_eval.add_argument("--config", required=True, help="YAML config path")
     p_eval.add_argument("--data-path", help="Optional evaluation dataset path")
     p_eval.set_defaults(func=cmd_eval)
 
-    # predict
     p_predict = sub.add_parser("predict", help="Run single-text prediction")
     p_predict.add_argument("--config", required=True, help="YAML config path")
     p_predict.add_argument("--text", required=True, help="Text to predict")
     p_predict.set_defaults(func=cmd_predict)
 
-    # serve
     p_serve = sub.add_parser("serve", help="Start FastAPI inference server")
     p_serve.add_argument("--config", required=True, help="YAML config path")
     p_serve.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
@@ -232,7 +231,6 @@ def main():
     p_serve.add_argument("--reload", action="store_true", help="Enable auto-reload")
     p_serve.set_defaults(func=cmd_serve)
 
-    # split
     p_split = sub.add_parser("split", help="Split raw JSONL into train/dev/test")
     p_split.add_argument("--input", help="Input JSONL file path (or use --config)")
     p_split.add_argument("--output", help="Output directory (default: same as input)")
@@ -247,7 +245,6 @@ def main():
     p_split.add_argument("--no-stratify", action="store_false", dest="stratify", help="Disable stratified split")
     p_split.set_defaults(func=cmd_split)
 
-    # doctor-data
     p_doctor = sub.add_parser("doctor-data", help="Diagnose dataset quality")
     p_doctor.add_argument("--config", required=True, help="YAML config path")
     p_doctor.add_argument("--strict", action="store_true", help="Exit 1 if any ERROR-level issue found")

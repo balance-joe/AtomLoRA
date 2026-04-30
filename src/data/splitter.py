@@ -1,4 +1,4 @@
-# src/data/splitter.py
+"""数据集切分工具：将原始 JSONL 按比例切分为 train/dev/test"""
 from __future__ import annotations
 
 import os
@@ -25,34 +25,27 @@ def split_data(
     label_mapping: dict = None,
     label_subset: dict = None,
 ) -> dict:
-    """Split a raw JSONL file into train/dev/test sets.
-
-    Returns:
-        Split report dict.
-    """
-    # Validate ratios
+    """将原始 JSONL 切分为 train/dev/test，返回切分报告"""
     total_ratio = train_ratio + dev_ratio + test_ratio
     if abs(total_ratio - 1.0) > 1e-6:
         raise ValueError(
             f"train_ratio + dev_ratio + test_ratio = {total_ratio}，必须等于 1.0"
         )
 
-    # Read data
     logger.info(f"读取数据: {input_path}")
     records = read_jsonl(input_path)
     if not records:
         raise ValueError(f"输入文件为空或全部无效: {input_path}")
 
-    # Validate fields
     _validate_fields(records, text_col, label_col)
 
-    # Normalize label_col to dict for config generation
+    # label_col 统一转为字典，便于后续生成配置
     if isinstance(label_col, str):
         label_col_map = {"default": label_col}
     else:
         label_col_map = label_col
 
-    # Split
+    # 执行切分
     if stratify:
         train_set, dev_set, test_set = _stratified_split(
             records, label_col, train_ratio, dev_ratio, test_ratio, seed
@@ -62,7 +55,7 @@ def split_data(
             records, train_ratio, dev_ratio, test_ratio, seed
         )
 
-    # Derive output filenames
+    # 从输入文件名推导输出文件名（去掉 _raw/_data 等后缀）
     stem = os.path.splitext(os.path.basename(input_path))[0]
     for suffix in ("_raw", "_data", "_all", "_full"):
         if stem.endswith(suffix):
@@ -81,7 +74,7 @@ def split_data(
     write_jsonl(dev_set, paths["dev"])
     write_jsonl(test_set, paths["test"])
 
-    # Build report (unified schema with doctor)
+    # 构建切分报告（与 doctor 的 schema 统一）
     label_dist = {}
     for name, dataset in [("train", train_set), ("dev", dev_set), ("test", test_set)]:
         label_dist[name] = dict(Counter(r[label_col] for r in dataset))
@@ -106,13 +99,12 @@ def split_data(
             "count": len(dataset),
         }
 
-    # Write report
     report_path = os.path.join(output_dir, "split_report.json")
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     logger.info(f"切分报告已写入: {report_path}")
 
-    # Generate config YAML for direct use with `atomlora train`
+    # 生成可直接用于 atomlora train 的配置文件
     config_path = _generate_config(
         output_dir, paths, text_col, label_col_map,
         label_mapping, label_subset, train_ratio, dev_ratio, test_ratio, seed,
@@ -123,6 +115,7 @@ def split_data(
 
 
 def _validate_fields(records: list[dict], text_col: str, label_col: str) -> None:
+    """校验 JSONL 记录是否包含指定的文本和标签字段"""
     sample = records[0]
     missing = []
     if text_col not in sample:
@@ -147,7 +140,7 @@ def _generate_config(
     test_ratio: float,
     seed: int,
 ) -> str:
-    """Generate a config.generated.yaml that can be used directly with `atomlora train`."""
+    """生成 config.generated.yaml，可直接用于 atomlora train"""
     import yaml
 
     config = {
@@ -190,7 +183,7 @@ def _stratified_split(
     test_ratio: float,
     seed: int,
 ) -> tuple[list, list, list]:
-    """Stratified split: maintain label distribution across all splits."""
+    """分层切分：按标签比例分配到各 split，保持标签分布一致"""
     groups: dict[str, list] = {}
     for record in records:
         label = record[label_col]
@@ -226,6 +219,7 @@ def _random_split(
     test_ratio: float,
     seed: int,
 ) -> tuple[list, list, list]:
+    """随机切分：不考虑标签分布，直接按比例划分"""
     rng = random.Random(seed)
     shuffled = records[:]
     rng.shuffle(shuffled)
