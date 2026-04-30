@@ -5,7 +5,10 @@ from src.utils.logger import get_logger
 
 logger = get_logger()
 
+
 class TextDataset(Dataset):
+    """简单的数据集包装器，将列表转为 Dataset"""
+
     def __init__(self, data_list):
         self.data_list = data_list
 
@@ -15,35 +18,28 @@ class TextDataset(Dataset):
     def __getitem__(self, idx):
         return self.data_list[idx]
 
+
 def collate_fn(batch):
-    """
-    处理 batch 数据，兼容单任务和双任务的 label 结构
-    """
-    # 1. 基础输入
+    """将 batch 中的样本拼接为 tensor，兼容单任务和多任务的标签结构"""
     input_ids = torch.tensor([item['input_ids'] for item in batch], dtype=torch.long)
     attention_mask = torch.tensor([item['attention_mask'] for item in batch], dtype=torch.long)
-    
-    # 2. 标签处理
+
     first_label = batch[0]['labels']
-    
+
     if isinstance(first_label, dict):
-        # 双任务逻辑
+        # 多任务：每个任务的标签分别转为 tensor
         labels = {}
         for task_key in first_label.keys():
-            # 获取该任务的所有标签列表
             raw_labels = [item['labels'][task_key] for item in batch]
-            
             try:
-                # 尝试强制转为 int 列表，防止 list 中包含 str
                 int_labels = [int(l) for l in raw_labels]
                 labels[task_key] = torch.tensor(int_labels, dtype=torch.long)
             except ValueError as e:
                 logger.error(f"数据类型错误！任务 '{task_key}' 的标签包含非数字字符。")
                 logger.error(f"前5个样本的原始标签: {raw_labels[:5]}")
                 raise e
-            
     else:
-        # 单任务逻辑
+        # 单任务：标签直接转为 tensor
         raw_labels = [item['labels'] for item in batch]
         try:
             int_labels = [int(l) for l in raw_labels]
@@ -51,18 +47,20 @@ def collate_fn(batch):
         except ValueError as e:
             logger.error(f"数据类型错误！标签包含非数字字符: {raw_labels[:5]}")
             raise e
-        
+
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "labels": labels
     }
-    
+
+
 def create_dataloader(data, batch_size, shuffle=False):
+    """创建 DataLoader，使用自定义 collate_fn 处理标签结构"""
     dataset = TextDataset(data)
     return DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        shuffle=shuffle, 
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
         collate_fn=collate_fn
     )

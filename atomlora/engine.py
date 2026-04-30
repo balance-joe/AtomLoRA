@@ -7,7 +7,7 @@ try:
 except Exception:
     pass
 
-# 确保项目根目录在 sys.path 中，以便导入 evaluator、src 等模块
+# 项目根目录加入 sys.path，确保能导入 evaluator、src 等顶层模块
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
@@ -23,17 +23,15 @@ from src.trainer.train_engine import Trainer
 
 
 def main(config_path):
-    # 1. Config
+    """训练入口：解析配置 → 加载数据 → 构建模型 → 启动训练"""
     config = parse_config(config_path, mode="train")
     exp_id = config["exp_id"]
     logger = init_logger(exp_id, config["task_type"])
 
     logger.info(f"加载配置，文件是 {config_path}")
 
-    # 2. Tokenizer (包含特殊token添加)
     tokenizer = load_tokenizer(config)
 
-    # 3. Data
     logger.info("加载数据集...")
     train_data = load_dataset(config, config["data"]["train_path"], tokenizer)
     dev_data = load_dataset(config, config["data"]["dev_path"], tokenizer)
@@ -42,11 +40,9 @@ def main(config_path):
     train_loader = create_dataloader(train_data, batch_size, shuffle=True)
     dev_loader = create_dataloader(dev_data, batch_size, shuffle=False)
 
-    # 4. Model
     logger.info("构建模型...")
     model = TaskTextClassifier(config, tokenizer)
 
-    # 5. Trainer
     logger.info("初始化训练类...")
     trainer = Trainer(
         config=config,
@@ -56,11 +52,11 @@ def main(config_path):
         tokenizer=tokenizer
     )
 
-    # 6. Run
     trainer.train()
 
 
 def evaluate(config_path, data_path=None):
+    """评估入口：加载配置和模型，对指定数据集进行评估"""
     config = parse_config(config_path, mode="eval", eval_data_path=data_path)
     exp_id = config["exp_id"]
     logger = init_logger(exp_id, config["task_type"])

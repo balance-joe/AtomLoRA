@@ -1,4 +1,4 @@
-# api/settings.py
+"""API 服务配置：定义各根目录路径，支持环境变量覆盖"""
 import os
 
 API_DIR = os.path.dirname(os.path.abspath(__file__))

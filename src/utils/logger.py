@@ -1,4 +1,4 @@
-# src/utils/logger.py
+"""日志管理：基于 loguru 的实验级日志，支持按实验 ID 隔离日志文件"""
 import logging
 import os
 import sys
@@ -7,17 +7,19 @@ from typing import Optional, Union
 
 from loguru import logger as _logger
 
-# 全局日志配置
 LOG_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
-MAX_LOG_SIZE = 10 * 1024 * 1024  # 单日志文件最大10MB
-BACKUP_COUNT = 5  # 日志文件备份数
+MAX_LOG_SIZE = 10 * 1024 * 1024  # 单文件最大 10MB
+BACKUP_COUNT = 5  # 保留最近 5 个备份
 DEFAULT_LOG_LEVEL = "INFO"
 
+# 文件日志格式：包含实验 ID 和任务类型，便于过滤
 FILE_FORMAT = (
     "[{time:YYYY-MM-DD HH:mm:ss}] [{level}] "
     "[exp:{extra[experiment_id]}] [task:{extra[task_type]}] "
     "[{module}:{line}] - {message}"
 )
+
+# 控制台日志格式：简洁，仅保留时间和消息
 CONSOLE_FORMAT = (
     "<green>[{time:YYYY-MM-DD HH:mm:ss}]</green> "
     "<level>[{level}]</level> - <level>{message}</level>"
@@ -28,6 +30,7 @@ _experiment_loggers = {}
 
 
 def _ensure_utf8_stdio() -> None:
+    """强制标准输出使用 UTF-8 编码，防止中文乱码"""
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8")
@@ -37,12 +40,14 @@ def _ensure_utf8_stdio() -> None:
 
 
 def _normalize_level(level: Union[int, str]) -> str:
+    """将日志级别统一转为大写字符串"""
     if isinstance(level, int):
         return logging.getLevelName(level)
     return str(level).upper()
 
 
 def _configure_base_logger(log_level: Union[int, str] = DEFAULT_LOG_LEVEL) -> None:
+    """配置基础 logger：移除默认处理器，添加控制台输出（仅执行一次）"""
     global _configured
     if _configured:
         return

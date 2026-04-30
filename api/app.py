@@ -10,13 +10,14 @@ from src.utils.logger import get_logger
 
 logger = get_logger()
 model_manager = ModelManager()
-# 注意：当前仅支持单 worker 模式（uvicorn 默认就是单 worker）
-# 多 worker (--workers N) 时每个进程有独立的 GPU 锁，无法互斥，会导致 OOM
+
+# 当前仅支持单 worker 模式（uvicorn 默认就是单 worker）
+# 多 worker 时每个进程有独立的 GPU 锁，无法互斥，会导致 OOM
 gpu_lock = Lock()
 
 
 def _load_default_model():
-    """启动时加载默认模型（在 gpu_lock 内调用）。"""
+    """启动时加载默认模型（通过环境变量或配置指定）"""
     serve_config = os.environ.get("ATOMLORA_SERVE_CONFIG")
     if serve_config:
         try:
@@ -56,6 +57,7 @@ app = FastAPI(title="Ai模型主页", lifespan=lifespan)
 
 @app.get("/index")
 def index():
+    """健康检查接口"""
     return success()
 
 
@@ -86,6 +88,7 @@ async def load_model(request: Request):
 
 @app.post("/predict")
 async def predict(request: Request):
+    """预测接口：接收模型名和样本，返回预测结果"""
     try:
         body = await request.json()
     except Exception:
@@ -121,6 +124,7 @@ async def predict(request: Request):
 
 @app.get("/model_info/{model_name}")
 def model_info(model_name: str):
+    """获取模型详细信息"""
     try:
         info = model_manager.get_model_info(model_name)
         return success(data=info)

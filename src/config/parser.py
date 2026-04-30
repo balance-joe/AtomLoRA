@@ -1,3 +1,4 @@
+"""配置解析器：支持继承、变量替换、字段归一化和运行时校验"""
 import os
 import copy
 import yaml
@@ -14,11 +15,12 @@ RUNTIME_MODES = {"train", "eval", "predict", "serve"}
 
 
 def resolve_saved_config_path(exp_id: str) -> str:
+    """返回已保存实验的配置文件路径"""
     return os.path.join(OUTPUTS_ROOT, exp_id, "config.yaml")
 
 
 def resolve_config_path(config_path: str) -> str:
-    """Resolve a config reference from CWD/configs/templates/outputs/latest."""
+    """解析配置路径：支持 latest 快捷方式、绝对路径、相对路径和 configs/ 目录查找"""
     if not config_path:
         raise ValueError("config_path 不能为空")
 
@@ -59,12 +61,12 @@ def resolve_config_path(config_path: str) -> str:
 
 
 def resolve_runtime_config_path(config_path: str, mode: str = "train") -> str:
-    """Resolve the config file that should define runtime semantics."""
+    """解析运行时配置：eval/predict/serve 模式下优先使用已保存的实验配置"""
     resolved = resolve_config_path(config_path)
     if mode not in {"eval", "predict", "serve"}:
         return resolved
 
-    # If the caller already points at a saved experiment config, trust it.
+    # 已经是实验目录下的配置，直接信任
     if os.path.basename(resolved) == "config.yaml" and os.path.basename(os.path.dirname(resolved)) != "configs":
         return resolved
 
@@ -81,6 +83,7 @@ def resolve_runtime_config_path(config_path: str, mode: str = "train") -> str:
 
 
 def _load_yaml(path: str) -> Dict[str, Any]:
+    """加载 YAML 配置文件，返回字典"""
     with open(path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
     if not isinstance(config, dict):
@@ -89,6 +92,8 @@ def _load_yaml(path: str) -> Dict[str, Any]:
 
 
 class ConfigParser:
+    """配置解析器：处理继承、变量替换、字段归一化、校验和运行时适配"""
+
     def __init__(
         self,
         config_path: str,
@@ -108,6 +113,7 @@ class ConfigParser:
         self.eval_data_path = eval_data_path
 
     def parse(self) -> Dict[str, Any]:
+        """执行完整的配置解析流程：加载 → 继承 → 变量替换 → 归一化 → 校验"""
         self.raw_config = self._load_single_config(self.config_path)
         self.final_config = self._handle_inheritance(self.raw_config)
         self.final_config = self._replace_variables(self.final_config)
@@ -123,6 +129,7 @@ class ConfigParser:
         return self.final_config
 
     def _load_single_config(self, config_path: str) -> Dict[str, Any]:
+        """加载单个配置文件，带缓存避免重复读取"""
         if config_path in self.loaded_configs:
             return self.loaded_configs[config_path]
         config = _load_yaml(config_path)
@@ -130,6 +137,7 @@ class ConfigParser:
         return config
 
     def _handle_inheritance(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """递归处理 base_config 继承，子配置覆盖父配置"""
         if not config.get("base_config"):
             return config.copy()
 
@@ -140,6 +148,7 @@ class ConfigParser:
         return merged
 
     def _deep_merge(self, parent: Dict[str, Any], child: Dict[str, Any]) -> Dict[str, Any]:
+        """深度合并两个字典，子配置的值覆盖父配置"""
         merged = parent.copy()
         for key, value in child.items():
             if isinstance(value, dict) and isinstance(merged.get(key), dict):
@@ -149,6 +158,7 @@ class ConfigParser:
         return merged
 
     def _replace_variables(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """替换配置中的 ${var} 变量占位符（从 global_label_map.json 读取）"""
         import json as _json
 
         global_path = os.path.join(PROJECT_ROOT, "data", "global_label_map.json")
@@ -174,6 +184,7 @@ class ConfigParser:
         return _walk(config)
 
     def _normalize_field_names(self):
+        """归一化字段名：兼容旧配置的字段命名（如 raw_data_path → train_path）"""
         data = self.final_config.setdefault("data", {})
         if "raw_data_path" in data and "train_path" not in data:
             data["train_path"] = data.pop("raw_data_path")
@@ -196,6 +207,7 @@ class ConfigParser:
             groups["bert"] = train["bert_lr"]
 
     def _apply_runtime_overrides(self):
+        """应用运行时覆盖：eval/predict/serve 模式下从请求配置提取 batch_size 等覆盖"""
         if self.mode in {"eval", "predict", "serve"}:
             file_overrides = self._extract_runtime_overrides_from_requested_config()
             if file_overrides:
@@ -205,6 +217,7 @@ class ConfigParser:
             self.final_config = self._deep_merge(self.final_config, self.runtime_overrides)
 
     def _extract_runtime_overrides_from_requested_config(self) -> Dict[str, Any]:
+        """从请求的配置中提取运行时覆盖项（resources、batch_size 等）"""
         if self.requested_config_path == self.config_path:
             return {}
         if self._is_saved_experiment_config(self.requested_config_path):
@@ -228,11 +241,13 @@ class ConfigParser:
         return overrides
 
     def _is_saved_experiment_config(self, path: str) -> bool:
+        """判断路径是否为已保存的实验配置（outputs/*/config.yaml）"""
         normalized = os.path.normpath(path)
         outputs_root = os.path.normpath(OUTPUTS_ROOT)
         return os.path.basename(normalized) == "config.yaml" and normalized.startswith(outputs_root)
 
     def _generate_label_mapping(self):
+        """从 label_subset 自动生成 label_mapping（如果未显式配置）"""
         data = self.final_config.get("data", {})
         task_type = self.final_config.get("task_type", "single_cls")
 
@@ -261,6 +276,7 @@ class ConfigParser:
             }
 
     def _validate_config(self):
+        """校验配置完整性：必填字段、数据契约、模型契约、训练参数"""
         config = self.final_config
         self._require_top_level_fields(config)
         self._validate_task_type(config)
@@ -272,11 +288,13 @@ class ConfigParser:
             self._validate_artifact_contract(config)
 
     def _require_top_level_fields(self, config: Dict[str, Any]):
+        """校验顶层必填字段（exp_id、task_type）"""
         for field in ("exp_id", "task_type"):
             if field not in config:
                 raise ValueError(f"[CONFIG] 缺少必填字段 '{field}'")
 
     def _validate_task_type(self, config: Dict[str, Any]):
+        """校验 task_type 是否合法"""
         valid_task_types = ("single_cls", "multi_cls")
         if config["task_type"] not in valid_task_types:
             raise ValueError(
@@ -284,6 +302,7 @@ class ConfigParser:
             )
 
     def _validate_data_contract(self, config: Dict[str, Any]):
+        """校验数据配置：字段完整性、路径存在性"""
         data = config.get("data")
         if not isinstance(data, dict):
             raise ValueError("[CONFIG] data 必须是字典")
@@ -318,6 +337,7 @@ class ConfigParser:
                     self._validate_existing_path(dev_path, field_name="data.dev_path")
 
     def _validate_model_contract(self, config: Dict[str, Any]):
+        """校验模型配置：架构和 LoRA 参数"""
         model = config.get("model")
         if not isinstance(model, dict):
             raise ValueError("[CONFIG] model 必须是字典")
@@ -329,6 +349,7 @@ class ConfigParser:
             raise ValueError("[CONFIG] model.lora 必须是字典")
 
     def _validate_train_contract(self, config: Dict[str, Any]):
+        """校验训练配置：batch_size、调度器、早停、优化器分组"""
         train = config.get("train")
         if not isinstance(train, dict):
             raise ValueError("[CONFIG] train 必须是字典")
@@ -363,6 +384,7 @@ class ConfigParser:
             )
 
     def _validate_artifact_contract(self, config: Dict[str, Any]):
+        """校验实验产物目录是否存在（eval/predict/serve 模式）"""
         exp_id = config["exp_id"]
         exp_dir = os.path.join(OUTPUTS_ROOT, exp_id)
         if not os.path.isdir(exp_dir):
@@ -372,6 +394,7 @@ class ConfigParser:
             )
 
     def _validate_existing_path(self, path_value: str, field_name: str):
+        """校验路径是否存在，支持相对路径（基于项目根目录）"""
         resolved = path_value if os.path.isabs(path_value) else os.path.normpath(os.path.join(PROJECT_ROOT, path_value))
         if not os.path.exists(resolved):
             raise FileNotFoundError(
@@ -380,6 +403,7 @@ class ConfigParser:
             )
 
     def _adapt_task_type(self):
+        """根据任务类型生成便捷字段（label_key、task_names 等）"""
         task_type = self.final_config["task_type"]
         data_config = self.final_config["data"]
 
@@ -401,6 +425,7 @@ def parse_config(
     runtime_overrides: Optional[Dict[str, Any]] = None,
     eval_data_path: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """配置解析入口：创建 ConfigParser 并执行完整解析流程"""
     return ConfigParser(
         config_path,
         mode=mode,

@@ -8,12 +8,14 @@ logger = get_logger()
 
 
 class MetricManager:
+    """评估指标管理器：验证输入合法性并计算 F1、准确率等指标"""
+
     def __init__(self, config):
         self.task_type = config["task_type"]
         self.config = config
 
     def validate_inputs(self, all_logits, all_labels):
-        """验证 logits/labels 的 shape、值域、任务对齐。不通过则抛异常。"""
+        """校验 logits/labels 的 shape、值域和任务名是否对齐，不通过则抛异常"""
         if set(all_logits.keys()) != set(all_labels.keys()):
             raise ValueError(
                 f"任务名不匹配: logits={set(all_logits.keys())}, labels={set(all_labels.keys())}"
@@ -23,7 +25,6 @@ class MetricManager:
             logits = all_logits[task_name]
             labels = all_labels[task_name]
 
-            # shape 对齐
             if logits.shape[0] != labels.shape[0]:
                 raise ValueError(
                     f"任务 '{task_name}' 样本数不匹配: logits={logits.shape[0]}, labels={labels.shape[0]}"
@@ -33,7 +34,6 @@ class MetricManager:
             label_min = int(labels.min())
             label_max = int(labels.max())
 
-            # 值域检查
             if label_min < 0:
                 raise ValueError(
                     f"任务 '{task_name}' 存在负标签: min={label_min}"
@@ -43,7 +43,7 @@ class MetricManager:
                     f"任务 '{task_name}' 标签越界: max={label_max}, num_classes={num_classes}"
                 )
 
-            # 诊断日志（仅首次打印）
+            # 打印标签和预测分布，辅助发现类别不平衡等问题
             unique_labels = torch.unique(labels).tolist()
             preds = np.argmax(logits.numpy(), axis=1)
             unique_preds = np.unique(preds).tolist()
@@ -55,26 +55,22 @@ class MetricManager:
             )
 
     def compute(self, all_logits, all_labels):
-        """
-        all_logits: Dict[task_name, Tensor]
-        all_labels: Dict[task_name, Tensor]
-        """
+        """计算评估指标：单任务返回 F1/acc，多任务返回各任务加权平均"""
         metrics = {}
         scores_for_avg = []
-        
-        # 1. 单任务
+
         if self.task_type == "single_cls":
             logits = all_logits["default"]
             labels = all_labels["default"].numpy()
             preds = np.argmax(logits.numpy(), axis=1)
-            
-            f1 = f1_score(labels, preds, average='macro') # 或 binary
+
+            f1 = f1_score(labels, preds, average='macro')
             metrics["acc"] = accuracy_score(labels, preds)
             metrics["f1"] = f1
             metrics["main_score"] = f1
             return metrics
-            
-        # 2. 多任务
+
+        # 多任务：分别计算每个任务的 F1，再按 loss_weight 加权平均
         loss_weights = self.config["train"].get("loss_weight", [1.0, 1.0])
 
         for i, (task_name, logits) in enumerate(all_logits.items()):
@@ -85,10 +81,9 @@ class MetricManager:
             metrics[f"{task_name}_f1"] = score
             metrics[f"{task_name}_acc"] = accuracy_score(labels, preds)
             scores_for_avg.append(score)
-            
-        # 加权平均
+
         avg_f1 = np.average(scores_for_avg, weights=loss_weights[:len(scores_for_avg)])
         metrics["avg_f1"] = avg_f1
         metrics["main_score"] = avg_f1
-        
+
         return metrics

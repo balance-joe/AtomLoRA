@@ -1,4 +1,4 @@
-# src/data/doctor.py
+"""数据集质量诊断工具：检查标签分布、空值、重复、类别缺失等问题"""
 from __future__ import annotations
 
 import os
@@ -10,35 +10,31 @@ from src.utils.logger import get_logger
 
 logger = get_logger()
 
-# Severity levels
+# 问题严重程度等级
 ERROR = "ERROR"
 WARNING = "WARNING"
 INFO = "INFO"
 
-# Top N problem samples to include in report
+# 报告中展示的问题样本数量上限
 TOP_N = 5
 
 
 def run_doctor(config: dict, low_count_threshold: int = 10) -> dict:
-    """Run data quality diagnostics on train/dev/test splits.
-
-    Returns:
-        Full diagnostic report dict with severity levels (ERROR/WARNING/INFO).
-    """
+    """对 train/dev/test 数据集进行质量诊断，返回包含各级别问题的报告"""
     data_cfg = config["data"]
     text_col = data_cfg["text_col"]
     label_col = data_cfg["label_col"]
     label_mapping = data_cfg.get("label_mapping", {})
     label_subset = data_cfg.get("label_subset", {})
 
-    # Normalize label_col for single_cls
+    # single_cls 场景下 label_col 是字符串，统一转为字典
     if isinstance(label_col, str):
         task_name = next(iter(label_mapping.keys())) if label_mapping else "default"
         label_col_map = {task_name: label_col}
     else:
         label_col_map = label_col
 
-    # Build label sets
+    # 构建已知标签集合，用于后续检查未知标签
     data_label_keys: dict[str, set] = {}
     known_labels: dict[str, set] = {}
     for task_name, mapping in label_mapping.items():
@@ -53,7 +49,7 @@ def run_doctor(config: dict, low_count_threshold: int = 10) -> dict:
     for task_name, labels in label_subset.items():
         known_labels.setdefault(task_name, set()).update(str(l) for l in labels)
 
-    # Load splits
+    # 加载各 split 数据
     splits = {}
     for name in ("train", "dev", "test"):
         path = data_cfg.get(f"{name}_path")
@@ -65,7 +61,7 @@ def run_doctor(config: dict, low_count_threshold: int = 10) -> dict:
     if not splits:
         raise ValueError("没有可用的数据集，请检查配置中的 train_path / dev_path / test_path")
 
-    # Run checks
+    # 执行各项检查
     report = {
         "exp_id": config.get("exp_id", "unknown"),
         "checks": {},
@@ -82,7 +78,7 @@ def run_doctor(config: dict, low_count_threshold: int = 10) -> dict:
     report["checks"]["low_count_classes"] = _check_low_count(splits, label_col_map, low_count_threshold)
     report["checks"]["label_ratio_drift"] = _check_label_drift(splits, label_col_map)
 
-    # Aggregate by severity
+    # 按严重程度聚合问题
     errors = []
     warnings = []
     infos = []
@@ -114,22 +110,25 @@ def run_doctor(config: dict, low_count_threshold: int = 10) -> dict:
 
 
 def _resolve_path(path: str) -> str:
+    """将相对路径转为基于项目根目录的绝对路径"""
     if os.path.isabs(path):
         return path
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     return os.path.normpath(os.path.join(project_root, path))
 
 
-# ---- Individual checks ----
+# ---- 各项检查函数 ----
 
 
 def _check_sample_counts(splits: dict) -> dict:
+    """统计各 split 的样本数量"""
     counts = {name: len(records) for name, records in splits.items()}
     total = sum(counts.values())
     return {"severity": INFO, "status": "ok", "message": f"共 {total} 条样本", "total": total, "per_split": counts}
 
 
 def _check_label_distribution(splits: dict, label_col_map: dict) -> dict:
+    """统计各 split 各任务的标签分布"""
     dist = {}
     for name, records in splits.items():
         task_dists = {}
@@ -140,6 +139,7 @@ def _check_label_distribution(splits: dict, label_col_map: dict) -> dict:
 
 
 def _check_missing_classes(splits: dict, label_col_map: dict, expected_keys: dict) -> dict:
+    """检查各 split 是否缺少预期的标签类别"""
     missing = {}
     for name, records in splits.items():
         present = {}
@@ -151,7 +151,7 @@ def _check_missing_classes(splits: dict, label_col_map: dict, expected_keys: dic
                 missing.setdefault(name, {})[task_name] = sorted(absent)
 
     if missing:
-        # Missing classes in train is ERROR, in dev/test is WARNING
+        # 训练集缺少类别是 ERROR（模型无法学到该类别），验证/测试集降为 WARNING
         has_train_missing = "train" in missing
         level = ERROR if has_train_missing else WARNING
         return {"severity": level, "status": "fail", "message": f"部分 split 缺少类别", "detail": missing}
@@ -159,6 +159,7 @@ def _check_missing_classes(splits: dict, label_col_map: dict, expected_keys: dic
 
 
 def _check_empty_text(splits: dict, text_col: str) -> dict:
+    """检查是否存在空文本"""
     empty_counts = {}
     for name, records in splits.items():
         count = sum(1 for r in records if not r.get(text_col, "").strip())
@@ -172,6 +173,7 @@ def _check_empty_text(splits: dict, text_col: str) -> dict:
 
 
 def _check_empty_label(splits: dict, label_col_map: dict) -> dict:
+    """检查是否存在空标签"""
     empty_counts = {}
     for name, records in splits.items():
         for task_name, field in label_col_map.items():
@@ -185,6 +187,7 @@ def _check_empty_label(splits: dict, label_col_map: dict) -> dict:
 
 
 def _check_unknown_labels(splits: dict, label_col_map: dict, known_labels: dict) -> dict:
+    """检查是否存在不在 label_mapping 范围内的标签值"""
     unknown = {}
     for name, records in splits.items():
         for task_name, field in label_col_map.items():
@@ -205,6 +208,7 @@ def _check_unknown_labels(splits: dict, label_col_map: dict, known_labels: dict)
 
 
 def _check_duplicate_content(splits: dict, text_col: str) -> dict:
+    """检查 split 内部和跨 split 的重复文本"""
     all_texts = []
     per_split_dupes = {}
     top_samples = {}
@@ -226,7 +230,7 @@ def _check_duplicate_content(splits: dict, text_col: str) -> dict:
             ]
         all_texts.extend(texts)
 
-    # Cross-split duplicates
+    # 检查跨 split 的重复文本（数据泄露风险）
     cross_counter = Counter(all_texts)
     cross_dupes = {t: c for t, c in cross_counter.items() if c > 1 and t}
 
@@ -251,6 +255,7 @@ def _check_duplicate_content(splits: dict, text_col: str) -> dict:
 
 
 def _check_text_length(splits: dict, text_col: str) -> dict:
+    """统计文本长度分布（min/max/avg/p50/p95）"""
     stats = {}
     for name, records in splits.items():
         lengths = [len(r.get(text_col, "")) for r in records if r.get(text_col, "").strip()]
@@ -271,6 +276,7 @@ def _check_text_length(splits: dict, text_col: str) -> dict:
 
 
 def _check_low_count(splits: dict, label_col_map: dict, threshold: int) -> dict:
+    """检查是否存在样本数低于阈值的类别"""
     low = {}
     for name, records in splits.items():
         for task_name, field in label_col_map.items():
@@ -285,6 +291,7 @@ def _check_low_count(splits: dict, label_col_map: dict, threshold: int) -> dict:
 
 
 def _check_label_drift(splits: dict, label_col_map: dict) -> dict:
+    """检查各 split 与训练集之间的标签比例偏移"""
     ratios = {}
     for name, records in splits.items():
         task_ratios = {}
@@ -315,14 +322,13 @@ def _check_label_drift(splits: dict, label_col_map: dict) -> dict:
 
 
 def format_report_markdown(report: dict) -> str:
-    """Format the diagnostic report as a human-readable markdown string."""
+    """将诊断报告格式化为 Markdown 字符串"""
     lines = [
         f"# Dataset Report: {report.get('exp_id', 'unknown')}",
         "",
         f"**Status**: {report['status']}  ",
     ]
 
-    # Severity summary
     parts = []
     if report["error_count"]:
         parts.append(f"ERROR: {report['error_count']}")
@@ -333,7 +339,6 @@ def format_report_markdown(report: dict) -> str:
     lines.append(f"**Summary**: {' | '.join(parts)}")
     lines.append("")
 
-    # Errors first
     if report["errors"]:
         lines.append("## ERRORS")
         for e in report["errors"]:
@@ -348,7 +353,6 @@ def format_report_markdown(report: dict) -> str:
 
     checks = report["checks"]
 
-    # Sample counts
     sc = checks["sample_counts"]
     lines.append("## 1. Sample Counts")
     lines.append("| Split | Count |")
@@ -358,7 +362,6 @@ def format_report_markdown(report: dict) -> str:
     lines.append(f"| **Total** | **{sc['total']}** |")
     lines.append("")
 
-    # Label distribution
     ld = checks["label_distribution"]
     lines.append("## 2. Label Distribution")
     for split_name, task_dists in ld["distribution"].items():
@@ -370,7 +373,6 @@ def format_report_markdown(report: dict) -> str:
                 lines.append(f"| {label} | {count} |")
     lines.append("")
 
-    # Text length stats
     tls = checks["text_length_stats"]
     lines.append("## 3. Text Length Stats")
     lines.append("| Split | Count | Min | Avg | P50 | P95 | Max |")
@@ -382,7 +384,6 @@ def format_report_markdown(report: dict) -> str:
             lines.append(f"| {name} | {s['count']} | {s['min']} | {s['avg']} | {s['p50']} | {s['p95']} | {s['max']} |")
     lines.append("")
 
-    # Top duplicate samples
     dup_check = checks.get("duplicate_content", {})
     top_dupes = dup_check.get("top_duplicates", {})
     if top_dupes:
@@ -395,7 +396,6 @@ def format_report_markdown(report: dict) -> str:
                 lines.append(f"| {i} | {s['text']} | {s['count']} |")
         lines.append("")
 
-    # Quality checks summary
     lines.append("## 5. Quality Checks Summary")
     lines.append("| Check | Severity | Status | Message |")
     lines.append("|-------|----------|--------|---------|")

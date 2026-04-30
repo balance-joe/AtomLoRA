@@ -14,63 +14,58 @@ from src.utils.paths import (
     copy_config_to_output, save_metrics, update_latest_link
 )
 
+
 class Trainer:
+    """训练器：封装优化器构建、训练循环、评估和模型保存"""
+
     def __init__(self, config, model, train_loader, dev_loader, tokenizer):
         self.config = config
         self.logger = get_logger(config["exp_id"])
         self.model = model
         self.train_loader = train_loader
         self.dev_loader = dev_loader
-        self.tokenizer = tokenizer # 需要保存 tokenizer
-        
+        self.tokenizer = tokenizer
+
         self.device = resolve_device(config)
         self.model.to(self.device)
-        
-        # 输出路径
+
         self.output_dir = os.path.join("outputs", config["exp_id"])
         self.tokenizer_save_path = os.path.join(self.output_dir, TOKENIZER_DIR)
         os.makedirs(os.path.join(self.output_dir, ADAPTER_DIR), exist_ok=True)
         os.makedirs(os.path.join(self.output_dir, CLASSIFIER_DIR), exist_ok=True)
         copy_config_to_output(config, self.output_dir)
-        
-        # 初始化组件
+
         self.optimizer = self._build_optimizer()
         self.scheduler = self._build_scheduler()
         self.metric_manager = MetricManager(config)
 
     def _build_optimizer(self):
-        """
-        移植旧代码的核心优化器分组逻辑
-        """
-        # 1. 筛选参数
+        """按参数组（LoRA / 分类头 / 主干）分别设置学习率，构建 AdamW 优化器"""
+        # 按模块名筛选可训练参数
         lora_params = [p for n, p in self.model.named_parameters() if "lora_" in n and p.requires_grad]
         classifier_params = [p for n, p in self.model.named_parameters() if "classifiers" in n and p.requires_grad]
-        bert_params = [p for n, p in self.model.named_parameters() 
+        bert_params = [p for n, p in self.model.named_parameters()
                     if "lora_" not in n and "classifiers" not in n and p.requires_grad]
 
-        # 2. 构建分组
         optimizer_grouped_parameters = []
-        
-        # 从的配置路径读取学习率
+
         lr_config = self.config["train"]["optimizer"]["groups"]
-        
-        # LoRA 组
+
         if lora_params:
             optimizer_grouped_parameters.append({
                 "params": lora_params,
                 "lr": float(lr_config["lora"]),
                 "weight_decay": 0.01
             })
-            
-        # Classifier 组
+
         if classifier_params:
             optimizer_grouped_parameters.append({
                 "params": classifier_params,
                 "lr": float(lr_config["classifier"]),
                 "weight_decay": 0.01
             })
-            
-        # Bert 组 (通常为空，因为冻结了)
+
+        # 主干参数通常已冻结，此组一般为空
         if bert_params:
             optimizer_grouped_parameters.append({
                 "params": bert_params,
@@ -90,6 +85,7 @@ class Trainer:
         return torch.optim.AdamW(optimizer_grouped_parameters)
 
     def _build_scheduler(self):
+        """根据配置创建学习率调度器（支持 linear 和 cosine）"""
         num_epochs = self.config["train"]["num_epochs"]
         grad_accum = self.config["train"].get("gradient_accumulation_steps", 1)
         steps_per_epoch = math.ceil(len(self.train_loader) / grad_accum)
@@ -142,6 +138,7 @@ class Trainer:
             self.model.train()
 
     def train(self):
+        """主训练循环：逐 epoch 训练、评估、保存最优模型，支持梯度累积和早停"""
         epochs = self.config["train"]["num_epochs"]
         grad_accum = self.config["train"].get("gradient_accumulation_steps", 1)
         best_score = float('-inf')
@@ -163,7 +160,6 @@ class Trainer:
             self.optimizer.zero_grad()
 
             for step, batch in enumerate(pbar):
-                # 移动数据
                 input_ids = batch["input_ids"].to(self.device)
                 mask = batch["attention_mask"].to(self.device)
                 labels = batch["labels"]
@@ -172,7 +168,6 @@ class Trainer:
                 else:
                     labels = labels.to(self.device)
 
-                # Forward
                 result = self.model(input_ids, mask, labels)
 
                 if isinstance(result, tuple) and len(result) == 2:
@@ -183,7 +178,7 @@ class Trainer:
                 else:
                     raise ValueError(f"模型返回了意外的类型: {type(result)}")
 
-                # 梯度累积
+                # 梯度累积：将 loss 按累积步数均分
                 loss = loss / grad_accum
                 loss.backward()
 
@@ -194,7 +189,7 @@ class Trainer:
                     self.scheduler.step()
                     self.optimizer.zero_grad()
 
-                    # 训练监控：定期打印 logits 置信度和 LoRA 权重状态
+                    # 定期打印置信度和 LoRA 权重状态，辅助调试
                     if global_step % monitor_interval == 0 and logits_dict is not None:
                         self._log_training_monitor(global_step, logits_dict, labels)
 
@@ -202,18 +197,16 @@ class Trainer:
 
                 pbar.set_postfix({"loss": f"{loss.item() * grad_accum:.4f}"})
 
-            # 处理 epoch 末尾不足一个累积窗口的残余梯度
+            # epoch 末尾不足一个累积窗口的残余梯度也要更新
             if (step + 1) % grad_accum != 0:
                 self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
 
-            # 评估
             metrics = self.evaluate()
             log_msg = f"Epoch {epoch} | " + " | ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
             self.logger.info(log_msg)
-            
-            # 保存最优模型
+
             current_score = metrics.get(monitor_metric, metrics["main_score"])
             if current_score > best_score:
                 best_score = current_score
@@ -232,35 +225,29 @@ class Trainer:
                     )
                     break
 
-        # 训练结束后保存最优指标
         save_metrics(best_metrics, self.output_dir)
         self.logger.info(f"✅ 最优指标已保存至: {os.path.join(self.output_dir, 'metrics.json')}")
 
-        # 创建 latest 链接，方便用户直接访问最新实验
+        # 创建 latest 软链接，指向最新实验目录
         config_copy = os.path.join(self.output_dir, CONFIG_FILE)
         update_latest_link(self.output_dir, metrics=best_metrics, config_path=config_copy)
         self.logger.info(f"✅ outputs/latest -> {self.output_dir}")
 
     def evaluate(self):
+        """在验证集上评估模型，返回指标字典"""
         return run_evaluation(
             self.model, self.dev_loader, self.config,
             self.metric_manager, self.device, show_progress=False
         )
 
-    
     def save_model(self):
-        """
-        [PEFT标准] 保存 LoRA 适配器、分类头、Tokenizer
-        """
-        # 1. 保存 LoRA 适配器 -> adapter/ 子目录
+        """保存 LoRA 适配器、分类头和 Tokenizer 到实验目录"""
         adapter_dir = os.path.join(self.output_dir, ADAPTER_DIR)
         self.model.bert.save_pretrained(adapter_dir)
         self.logger.info(f"✅ LoRA 适配器权重已保存至: {adapter_dir}")
 
-        # 2. 保存 Tokenizer
         self.tokenizer.save_pretrained(self.tokenizer_save_path)
 
-        # 3. 保存 Classifiers -> classifier/ 子目录
         clf_dir = os.path.join(self.output_dir, CLASSIFIER_DIR)
         os.makedirs(clf_dir, exist_ok=True)
         torch.save(self.model.classifiers.state_dict(), os.path.join(clf_dir, CLASSIFIER_FILE))

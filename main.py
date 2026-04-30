@@ -8,7 +8,7 @@ try:
 except Exception:
     pass
 
-# 确保项目根目录在 sys.path 中
+# 项目根目录加入 sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from atomlora.engine import main, evaluate

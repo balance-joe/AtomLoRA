@@ -1,4 +1,3 @@
-# src/data/data_processor.py
 import json
 from tqdm import tqdm
 from src.utils.logger import get_logger
@@ -6,38 +5,32 @@ from src.utils.logger import get_logger
 
 def load_dataset(config, path, tokenizer):
     """
-    加载已预处理的JSON Lines数据集（文本/标签字段已处理完成）
-    
-    Args:
-        config: 解析后的配置字典
-        path: 数据集路径
-        tokenizer: 模型Tokenizer实例
-    
-    Returns:
-        list[dict]: 标准化样本列表，包含模型输入和标签
+    加载 JSON Lines 格式的数据集，返回模型可用的样本列表。
+
+    每行数据经过 tokenize、标签映射后，生成包含 input_ids、attention_mask、labels 的字典。
+    配置中的 label_mapping 用于将原始标签转为整数 ID。
     """
     logger = get_logger(config["exp_id"])
     contents = []
     invalid_lines = 0
 
-    # 从配置提取核心字段（完全配置驱动）
     data_config = config["data"]
-    text_col = data_config["text_col"]  # 文本字段名（如"text"）
-    label_col_map = data_config["label_col"]  # 任务-标签字段映射
-    label_mapping = data_config["label_mapping"]  # 标签-ID映射
+    text_col = data_config["text_col"]
+    label_col_map = data_config["label_col"]
+    label_mapping = data_config["label_mapping"]
 
-    # 归一化：single_cls 下 label_col 可能是字符串，统一转为 dict
+    # single_cls 场景下 label_col 是字符串，统一转为 {任务名: 字段名} 的字典
     if isinstance(label_col_map, str):
         task_name = next(iter(label_mapping.keys()))
         label_col_map = {task_name: label_col_map}
-    
+
+    # 反转映射：{0: "非误报"} → {"非误报": 0}，方便从原始标签查 ID
     reversed_label_mapping = {}
     for task_name, mapping in label_mapping.items():
-        # 反转映射：将 {0: "非误报"} 变为 {"非误报": 0}
         reversed_label_mapping[task_name] = {v: int(k) for k, v in mapping.items()}
-        
+
     logger.info(f"加载数据集：{path} | 文本字段：{text_col} | 任务标签字段：{list(label_col_map.keys())}")
-    
+
     with open(path, "r", encoding="UTF-8") as f:
         for line_idx, line in enumerate(tqdm(f, desc=f"加载数据集 set")):
             lin = line.strip()
@@ -52,13 +45,12 @@ def load_dataset(config, path, tokenizer):
                 invalid_lines += 1
                 continue
 
-            # 1. 提取已预处理的文本（直接取配置指定字段）
             text = data.get(text_col, "")
             if not text:
                 logger.warning(f"第{line_idx+1}行文本字段[{text_col}]为空，跳过")
                 continue
 
-            # 2. Tokenize文本（通用处理，直接返回 list 避免 tensor→list 转换开销）
+            # tokenize：直接返回 list，避免 tensor→list 的转换开销
             encoded_input = tokenizer(
                 text=text,
                 padding="max_length",
@@ -67,14 +59,13 @@ def load_dataset(config, path, tokenizer):
                 return_attention_mask=True,
             )
 
-            # 3. 提取标签（配置化映射）
+            # 提取标签并映射为整数 ID
             labels = {}
             valid_label = True
             for task_name, field_name in label_col_map.items():
                 raw_label = data.get(field_name)
-                
-                # 特殊处理：如果原始数据是 int (例如0/1)，但 mapping 的 key 是 str，需转为 str 查找
-                # 如果原始数据是 str，直接查找
+
+                # 原始标签可能是 int 或 str，统一转 str 用于映射查找
                 lookup_key = str(raw_label) if raw_label is not None else None
 
                 if lookup_key is None:
@@ -83,38 +74,33 @@ def load_dataset(config, path, tokenizer):
                     break
 
                 try:
-                    # 优先用反转映射查找（支持字符串和整数标签值）
+                    # 优先精确匹配，再尝试字符串转换匹配，最后兜底整数标签
                     if raw_label in reversed_label_mapping.get(task_name, {}):
                         label_id = reversed_label_mapping[task_name][raw_label]
                     elif lookup_key in reversed_label_mapping.get(task_name, {}):
                         label_id = reversed_label_mapping[task_name][lookup_key]
                     elif isinstance(raw_label, (int, float)):
-                        # 数据本身就是整数标签，直接使用
                         label_id = int(raw_label)
                     else:
                         raise KeyError(f"标签 '{raw_label}' 不在任务 '{task_name}' 的映射中")
                     labels[task_name] = int(label_id)
                 except KeyError:
-                    # 仅在DEBUG模式下打印详细错误，防止刷屏
-                    # logger.debug(f"第{line_idx+1}行任务[{task_name}]标签[{raw_label}]不在映射中")
                     valid_label = False
                     break
-            
+
             if not valid_label:
                 invalid_lines += 1
                 continue
 
-            # 4. 标准化样本输出
             attn_mask = encoded_input["attention_mask"]
             sample = {
                 "input_ids": encoded_input["input_ids"],
                 "attention_mask": attn_mask,
                 "labels": labels,
                 "seq_len": sum(attn_mask),
-                "raw_text": text  # 保留原始文本用于调试
+                "raw_text": text,
             }
             contents.append(sample)
 
-    # 加载统计
-    logger.info(f"数据集集加载完成 | 有效样本：{len(contents)} | 无效行：{invalid_lines}")
+    logger.info(f"数据集加载完成 | 有效样本：{len(contents)} | 无效行：{invalid_lines}")
     return contents

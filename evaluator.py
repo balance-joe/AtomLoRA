@@ -21,6 +21,8 @@ from src.utils.paths import resolve_adapter_path, resolve_classifier_path, resol
 
 
 class Evaluator:
+    """评估器：加载已训练的模型并对数据集进行评估"""
+
     def __init__(self, config):
         self.config = config
         self.logger = get_logger(config["exp_id"])
@@ -37,10 +39,12 @@ class Evaluator:
         self._load_model()
 
     def _load_tokenizer(self):
+        """加载 Tokenizer"""
         self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
         self.logger.info("Tokenizer loaded for evaluation")
 
     def _load_model(self):
+        """加载基座模型、LoRA 适配器和分类头"""
         model_arch = self.config["model"]["arch"]
         model_path = self.config["model"].get("path", model_arch)
         resolved_path = _resolve_model_path(model_path, self.logger)
@@ -50,7 +54,7 @@ class Evaluator:
             output_hidden_states=True
         )
 
-        # Resize embedding 以匹配训练时添加的特殊 token
+        # embedding 层需要匹配训练时的词表大小（包含特殊 token）
         if len(self.tokenizer) > base_model.config.vocab_size:
             base_model.resize_token_embeddings(len(self.tokenizer))
 
@@ -71,6 +75,7 @@ class Evaluator:
         self.logger.info("Model + LoRA + classifier loaded")
 
     def evaluate(self, data_path):
+        """对指定数据集进行评估，返回指标字典"""
         if not data_path:
             raise ValueError("评估缺少 data_path，请在配置中提供 data.dev_path 或显式传入路径")
         data = load_dataset(self.config, data_path, self.tokenizer)
