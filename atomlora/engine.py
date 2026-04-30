@@ -1,12 +1,6 @@
 import sys
 import os
 
-try:
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-except Exception:
-    pass
-
 # 项目根目录加入 sys.path，确保能导入 evaluator、src 等顶层模块
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
@@ -16,10 +10,12 @@ from evaluator import Evaluator
 from src.model.text_dataset import create_dataloader
 
 from src.config.parser import parse_config
-from src.utils.logger import init_logger
+from src.utils.logger import init_logger, ensure_utf8_stdio
 from src.model.model_factory import load_tokenizer, TaskTextClassifier
 from src.data.data_processor import load_dataset
 from src.trainer.train_engine import Trainer
+
+ensure_utf8_stdio()
 
 
 def main(config_path):

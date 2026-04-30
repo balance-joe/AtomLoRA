@@ -2,6 +2,7 @@ import sys
 import os
 import argparse
 
+# 等价于 src.utils.logger.ensure_utf8_stdio()，此处提前执行因为 src 尚未可导入
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")

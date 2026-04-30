@@ -3,17 +3,10 @@ import json
 import sys
 import os
 
-from src.utils.logger import get_logger
+from src.utils.logger import get_logger, ensure_utf8_stdio
 
+ensure_utf8_stdio()
 logger = get_logger()
-
-# Windows 终端默认编码不是 UTF-8，中文日志会乱码，强制切换
-if hasattr(sys.stdout, 'reconfigure'):
-    try:
-        sys.stdout.reconfigure(encoding='utf-8')
-        sys.stderr.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
 
 
 def cmd_train(args):

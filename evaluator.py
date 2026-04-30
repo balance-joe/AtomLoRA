@@ -2,6 +2,7 @@ import os
 import sys
 import torch
 
+# 等价于 src.utils.logger.ensure_utf8_stdio()，此处提前执行因为 src 尚未可导入
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
