@@ -1,9 +1,10 @@
 import numpy as np
 import torch
 from sklearn.metrics import f1_score, accuracy_score
-import logging
 
-logger = logging.getLogger(__name__)
+from src.utils.logger import get_logger
+
+logger = get_logger()
 
 
 class MetricManager:

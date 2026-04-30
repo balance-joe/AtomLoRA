@@ -1,10 +1,11 @@
 import os
 import copy
 import yaml
-import logging
 from typing import Dict, Any, Optional
 
-logger = logging.getLogger(__name__)
+from src.utils.logger import get_logger
+
+logger = get_logger()
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 CONFIG_ROOT = os.path.join(PROJECT_ROOT, "configs")
@@ -116,10 +117,8 @@ class ConfigParser:
         self._validate_config()
         self._adapt_task_type()
         logger.info(
-            "配置集成完毕: exp_id=%s mode=%s source=%s",
-            self.final_config.get("exp_id"),
-            self.mode,
-            self.config_path,
+            f"配置集成完毕: exp_id={self.final_config.get('exp_id')} "
+            f"mode={self.mode} source={self.config_path}"
         )
         return self.final_config
 

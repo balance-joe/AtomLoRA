@@ -1,6 +1,10 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+from src.utils.logger import get_logger
+
+logger = get_logger()
+
 class TextDataset(Dataset):
     def __init__(self, data_list):
         self.data_list = data_list
@@ -34,8 +38,8 @@ def collate_fn(batch):
                 int_labels = [int(l) for l in raw_labels]
                 labels[task_key] = torch.tensor(int_labels, dtype=torch.long)
             except ValueError as e:
-                print(f"❌ 数据类型错误！任务 '{task_key}' 的标签包含非数字字符。")
-                print(f"前5个样本的原始标签: {raw_labels[:5]}")
+                logger.error(f"数据类型错误！任务 '{task_key}' 的标签包含非数字字符。")
+                logger.error(f"前5个样本的原始标签: {raw_labels[:5]}")
                 raise e
             
     else:
@@ -45,7 +49,7 @@ def collate_fn(batch):
             int_labels = [int(l) for l in raw_labels]
             labels = torch.tensor(int_labels, dtype=torch.long)
         except ValueError as e:
-            print(f"❌ 数据类型错误！标签包含非数字字符: {raw_labels[:5]}")
+            logger.error(f"数据类型错误！标签包含非数字字符: {raw_labels[:5]}")
             raise e
         
     return {

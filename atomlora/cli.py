@@ -3,6 +3,10 @@ import json
 import sys
 import os
 
+from src.utils.logger import get_logger
+
+logger = get_logger()
+
 # Windows 下强制 UTF-8 输出，防止中文日志乱码
 if hasattr(sys.stdout, 'reconfigure'):
     try:
@@ -52,17 +56,17 @@ def _friendly_error(e: Exception, config_path: str = None):
     err_type = type(e).__name__
     err_msg = str(e)
 
-    print(f"\n{'='*50}")
-    print(f"[ERROR] {err_type}: {err_msg}")
+    logger.error(f"\n{'='*50}")
+    logger.error(f"[ERROR] {err_type}: {err_msg}")
 
     # 按异常类型名精确匹配提示
     hint = _ERROR_HINTS.get(err_type)
     if hint:
-        print(f"[HINT] {hint}")
+        logger.error(f"[HINT] {hint}")
 
     if config_path:
-        print(f"[INFO] 配置文件: {config_path}")
-    print(f"{'='*50}\n")
+        logger.error(f"[INFO] 配置文件: {config_path}")
+    logger.error(f"{'='*50}\n")
 
 
 def cmd_serve(args):
@@ -77,6 +81,123 @@ def cmd_serve(args):
 
     os.environ["ATOMLORA_SERVE_CONFIG"] = resolve_runtime_config_path(args.config, mode="serve")
     uvicorn.run("api.app:app", host=args.host, port=args.port, reload=args.reload)
+
+
+def cmd_split(args):
+    from src.data.splitter import split_data
+
+    # Support --config mode: read text_col, label_col, label_mapping from config
+    input_path = args.input
+    output_dir = args.output
+    text_col = args.text_col
+    label_col = args.label_col
+    label_mapping = None
+    label_subset = None
+
+    if args.config:
+        from src.config.parser import parse_config
+        config = parse_config(args.config, mode="train")
+        data_cfg = config["data"]
+        text_col = text_col or data_cfg.get("text_col")
+        # label_col in config is a dict {task: field} or string; we need the raw field name
+        cfg_label_col = data_cfg.get("label_col")
+        if not label_col:
+            if isinstance(cfg_label_col, dict):
+                label_col = list(cfg_label_col.values())[0]
+            else:
+                label_col = cfg_label_col
+        label_mapping = data_cfg.get("label_mapping")
+        label_subset = data_cfg.get("label_subset")
+        # If --input not given, use train_path from config as source
+        if not input_path:
+            input_path = data_cfg.get("train_path")
+        if not output_dir:
+            output_dir = os.path.dirname(input_path) if input_path else "."
+
+    if not input_path:
+        logger.error("[ERROR] 必须指定 --input 或 --config（config 中需有 train_path）")
+        sys.exit(1)
+    if not text_col or not label_col:
+        logger.error("[ERROR] 必须指定 --text-col 和 --label-col，或通过 --config 提供")
+        sys.exit(1)
+
+    report = split_data(
+        input_path=input_path,
+        output_dir=output_dir,
+        text_col=text_col,
+        label_col=label_col,
+        train_ratio=args.train_ratio,
+        dev_ratio=args.dev_ratio,
+        test_ratio=args.test_ratio,
+        seed=args.seed,
+        stratify=args.stratify,
+        label_mapping=label_mapping,
+        label_subset=label_subset,
+    )
+
+    # Print summary
+    logger.info(f"\n{'='*50}")
+    logger.info(f"[OK] 切分完成 - 共 {report['total_samples']} 条样本")
+    for name, info in report["splits"].items():
+        logger.info(f"  {name}: {info['count']} 条 -> {info['path']}")
+    logger.info(f"配置文件: {report['config_path']}")
+    logger.info(f"报告: {os.path.join(os.path.dirname(report['config_path']), 'split_report.json')}")
+    logger.info(f"\n下一步: atomlora train --config {report['config_path']}")
+    logger.info(f"{'='*50}\n")
+
+
+def cmd_doctor(args):
+    import yaml as _yaml
+    from src.data.doctor import run_doctor, format_report_markdown
+
+    # Try full config parsing first; fall back to raw YAML for minimal configs
+    try:
+        from src.config.parser import parse_config, OUTPUTS_ROOT
+        config = parse_config(args.config, mode="train")
+    except (ValueError, FileNotFoundError):
+        with open(args.config, "r", encoding="utf-8") as f:
+            config = _yaml.safe_load(f)
+        OUTPUTS_ROOT = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "outputs",
+        )
+
+    exp_id = config.get("exp_id", "unknown")
+
+    report = run_doctor(config)
+
+    # Write outputs
+    output_dir = os.path.join(OUTPUTS_ROOT, exp_id)
+    os.makedirs(output_dir, exist_ok=True)
+
+    json_path = os.path.join(output_dir, "dataset_report.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    md_path = os.path.join(output_dir, "dataset_report.md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(format_report_markdown(report))
+
+    # Print summary with severity levels
+    logger.info(f"\n{'='*50}")
+    status_label = {"PASS": "PASS", "WARN": "WARNING", "FAIL": "FAIL"}[report["status"]]
+    logger.info(f"[{status_label}] 数据诊断完成")
+    if report["errors"]:
+        logger.info(f"  ERROR ({report['error_count']}):")
+        for e in report["errors"]:
+            logger.info(f"    {e}")
+    if report["warnings"]:
+        logger.info(f"  WARNING ({report['warning_count']}):")
+        for w in report["warnings"]:
+            logger.info(f"    {w}")
+    logger.info(f"  INFO ({report['info_count']})")
+    logger.info(f"报告: {json_path}")
+    logger.info(f"Markdown: {md_path}")
+    logger.info(f"{'='*50}\n")
+
+    # --strict mode: exit 1 if any ERROR
+    if args.strict and report["error_count"] > 0:
+        sys.exit(1)
 
 
 def main():
@@ -110,6 +231,27 @@ def main():
     p_serve.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
     p_serve.add_argument("--reload", action="store_true", help="Enable auto-reload")
     p_serve.set_defaults(func=cmd_serve)
+
+    # split
+    p_split = sub.add_parser("split", help="Split raw JSONL into train/dev/test")
+    p_split.add_argument("--input", help="Input JSONL file path (or use --config)")
+    p_split.add_argument("--output", help="Output directory (default: same as input)")
+    p_split.add_argument("--config", help="YAML config path (reads text_col, label_col, label_mapping)")
+    p_split.add_argument("--text-col", help="Text field name in JSONL")
+    p_split.add_argument("--label-col", help="Label field name in JSONL")
+    p_split.add_argument("--train-ratio", type=float, default=0.8, help="Train split ratio (default: 0.8)")
+    p_split.add_argument("--dev-ratio", type=float, default=0.1, help="Dev split ratio (default: 0.1)")
+    p_split.add_argument("--test-ratio", type=float, default=0.1, help="Test split ratio (default: 0.1)")
+    p_split.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    p_split.add_argument("--stratify", action="store_true", default=True, help="Stratified split by label (default: True)")
+    p_split.add_argument("--no-stratify", action="store_false", dest="stratify", help="Disable stratified split")
+    p_split.set_defaults(func=cmd_split)
+
+    # doctor-data
+    p_doctor = sub.add_parser("doctor-data", help="Diagnose dataset quality")
+    p_doctor.add_argument("--config", required=True, help="YAML config path")
+    p_doctor.add_argument("--strict", action="store_true", help="Exit 1 if any ERROR-level issue found")
+    p_doctor.set_defaults(func=cmd_doctor)
 
     args = parser.parse_args()
     if not args.command:

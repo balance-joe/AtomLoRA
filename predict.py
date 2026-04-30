@@ -15,8 +15,10 @@ if hasattr(sys.stdout, 'reconfigure'):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.config.parser import parse_config
-from src.utils.logger import init_logger
+from src.utils.logger import get_logger, init_logger
 from src.predict.predictor import TextAuditPredictor
+
+logger = get_logger()
 
 
 def batch_predict(config_path, output_path=None):
@@ -27,12 +29,12 @@ def batch_predict(config_path, output_path=None):
     logger.info(f"加载配置，文件是 {config_path}")
 
     predictor = TextAuditPredictor(config=config)
-    print("模型信息:", json.dumps(predictor.get_model_info(), ensure_ascii=False, indent=2))
+    logger.info(f"模型信息: {json.dumps(predictor.get_model_info(), ensure_ascii=False, indent=2)}")
 
     # TODO: 从配置或参数读取待预测数据
     batch_samples = []
     batch_results = predictor.predict_batch(batch_samples, batch_size=2)
-    print("批量预测结果:", json.dumps(batch_results, ensure_ascii=False, indent=2))
+    logger.info(f"批量预测结果: {json.dumps(batch_results, ensure_ascii=False, indent=2)}")
 
     if batch_results:
         # 输出路径：优先用参数，否则基于 exp_id 自动生成
@@ -46,9 +48,9 @@ def batch_predict(config_path, output_path=None):
             for result in batch_results:
                 clean_result = {k: v for k, v in result.items() if k.strip()}
                 writer.writerow(clean_result)
-        print(f"✅ CSV文件已导出至: {csv_path}")
+        logger.info(f"CSV文件已导出至: {csv_path}")
     else:
-        print("⚠️ 没有预测结果可导出")
+        logger.warning("没有预测结果可导出")
 
     predictor.close()
 

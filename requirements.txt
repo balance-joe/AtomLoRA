@@ -13,6 +13,7 @@ PyYAML>=6.0
 numpy>=1.24
 scikit-learn>=1.0
 tqdm>=4.60
+loguru>=0.7
 
 # API
 fastapi>=0.100
