@@ -1,22 +1,26 @@
 import json
 import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from threading import Lock
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 
 from api.model_manager import ModelManager
+from api.security import verify_api_key, create_rate_limiter
 from api.util import success, error
 from src.utils.logger import get_logger
 
 logger = get_logger()
 model_manager = ModelManager()
 
-# 当前仅支持单 worker 模式（uvicorn 默认就是单 worker）
-# 多 worker 时每个进程有独立的 GPU 锁，无法互斥，会导致 OOM
-gpu_lock = Lock()
+# 异步 GPU 互斥：Semaphore(1) 保证同一时刻只有一个 GPU 操作
+# run_in_executor 将阻塞的推理调用放到线程池，不阻塞事件循环
+gpu_semaphore = asyncio.Semaphore(1)
+executor = ThreadPoolExecutor(max_workers=1)
+rate_limiter = create_rate_limiter()
 
 
-def _load_default_model():
+async def _load_default_model():
     """启动时加载默认模型（通过环境变量或配置指定）"""
     serve_config = os.environ.get("ATOMLORA_SERVE_CONFIG")
     if serve_config:
@@ -24,8 +28,12 @@ def _load_default_model():
             from src.config.parser import parse_config
             config = parse_config(serve_config, mode="serve")
             model_name = config["exp_id"]
-            with gpu_lock:
-                model_manager.load_model(model_name, config_path=serve_config)
+            async with gpu_semaphore:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    executor,
+                    lambda: model_manager.load_model(model_name, config_path=serve_config),
+                )
             logger.info(f"默认模型已加载: {model_name} (from {serve_config})")
         except FileNotFoundError as e:
             logger.error(f"[ERROR] 模型或配置文件不存在: {e}")
@@ -39,8 +47,12 @@ def _load_default_model():
         logger.info("未设置默认模型（通过 atomlora serve --config 或 ATOMLORA_DEFAULT_MODEL 环境变量指定）")
         return
     try:
-        with gpu_lock:
-            model_manager.load_model(default_model)
+        async with gpu_semaphore:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                executor,
+                lambda: model_manager.load_model(default_model),
+            )
         logger.info(f"默认模型已加载: {default_model}")
     except Exception as e:
         logger.error(f"默认模型加载失败: {e}")
@@ -48,7 +60,7 @@ def _load_default_model():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _load_default_model()
+    await _load_default_model()
     yield
 
 
@@ -62,8 +74,10 @@ def index():
 
 
 @app.post("/load")
-async def load_model(request: Request):
+async def load_model(request: Request, _: None = Depends(verify_api_key)):
     """显式加载指定模型"""
+    await rate_limiter.check(request)
+
     try:
         body = await request.json()
     except Exception:
@@ -77,8 +91,12 @@ async def load_model(request: Request):
         from src.config.parser import parse_config
         config = parse_config(config_path, mode="serve")
         model_name = config["exp_id"]
-        with gpu_lock:
-            model_manager.load_model(model_name, config_path=config_path)
+        async with gpu_semaphore:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                executor,
+                lambda: model_manager.load_model(model_name, config_path=config_path),
+            )
         return success(msg=f"模型已加载: {model_name}")
     except FileNotFoundError as e:
         return error(f"模型或配置文件不存在: {e}")
@@ -87,8 +105,10 @@ async def load_model(request: Request):
 
 
 @app.post("/predict")
-async def predict(request: Request):
+async def predict(request: Request, _: None = Depends(verify_api_key)):
     """预测接口：接收模型名和样本，返回预测结果"""
+    await rate_limiter.check(request)
+
     try:
         body = await request.json()
     except Exception:
@@ -108,10 +128,11 @@ async def predict(request: Request):
         content = sample.get(text_col)
         if not content or not isinstance(content, str):
             return error(f"sample.{text_col} 必填且必须是字符串")
-        with gpu_lock:
-            result = model_manager.predict(
-                model_name=model_name,
-                sample=sample
+        async with gpu_semaphore:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                executor,
+                lambda: model_manager.predict(model_name=model_name, sample=sample),
             )
     except FileNotFoundError as e:
         return error(f"模型不存在: {e}")
@@ -133,8 +154,10 @@ def model_info(model_name: str):
 
 
 @app.post("/unload")
-def unload_models():
+async def unload_models(request: Request, _: None = Depends(verify_api_key)):
     """释放所有已加载模型的显存"""
-    with gpu_lock:
-        model_manager.unload_all()
+    await rate_limiter.check(request)
+    async with gpu_semaphore:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(executor, model_manager.unload_all)
     return success(msg="所有模型已卸载")
