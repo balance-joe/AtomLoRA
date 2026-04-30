@@ -3,6 +3,7 @@ import torch.nn as nn
 from transformers import AutoTokenizer, AutoModel
 from peft import get_peft_model, LoraConfig, TaskType
 
+from src.data.io import normalize_label_col
 from src.utils.logger import get_logger
 
 
@@ -117,22 +118,20 @@ class TaskTextClassifier(nn.Module):
         hidden_size = self.bert.config.hidden_size
         dropout_prob = self.config["model"].get("dropout", 0.1)
 
+        label_mapping_config = self.config["data"]["label_mapping"]
+        label_col_map, _ = normalize_label_col(
+            self.config["data"]["label_col"], self.task_type, label_mapping_config,
+        )
         if self.task_type == "single_cls":
-            label_mapping_config = self.config["data"]["label_mapping"]
-            first_task_key = next(iter(label_mapping_config.keys()))
-            first_task_label_map = label_mapping_config[first_task_key]
+            actual_task = next(iter(label_col_map.keys()))
+            first_task_label_map = label_mapping_config[actual_task]
             if not isinstance(first_task_label_map, dict):
                 raise ValueError(
                     "[MODEL] label_mapping 结构错误：single_cls 下期望 {task_name: {int: str}}"
                 )
             mappings = {"default": first_task_label_map}
         else:
-            label_col_config = self.config["data"]["label_col"]
-            if not isinstance(label_col_config, dict):
-                raise ValueError("multi_cls 任务要求 data.label_col 为字典 (task_name -> col_name)")
-            task_names = list(label_col_config.keys())
-            label_mapping_config = self.config["data"]["label_mapping"]
-            mappings = {task: label_mapping_config[task] for task in task_names}
+            mappings = {task: label_mapping_config[task] for task in label_col_map}
 
         classifiers = nn.ModuleDict()
         for task_name, label_map in mappings.items():
@@ -177,13 +176,9 @@ class TaskTextClassifier(nn.Module):
         logits_dict = {}
         total_loss = 0.0
 
-        if self.task_type == "single_cls":
-            task_names = ["default"]
-        else:
-            label_col_config = self.config["data"]["label_col"]
-            if not isinstance(label_col_config, dict):
-                raise ValueError("multi_cls 任务要求 data.label_col 为字典 (task_name -> col_name)")
-            task_names = list(label_col_config.keys())
+        _, task_names = normalize_label_col(
+            self.config["data"]["label_col"], self.task_type,
+        )
 
         loss_weights = self.config["train"].get("loss_weight", [1.0] * len(task_names))
 

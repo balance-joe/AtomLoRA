@@ -29,7 +29,7 @@ _configured = False
 _experiment_loggers = {}
 
 
-def _ensure_utf8_stdio() -> None:
+def ensure_utf8_stdio() -> None:
     """强制标准输出使用 UTF-8 编码，防止中文乱码"""
     if hasattr(sys.stdout, "reconfigure"):
         try:
@@ -52,7 +52,7 @@ def _configure_base_logger(log_level: Union[int, str] = DEFAULT_LOG_LEVEL) -> No
     if _configured:
         return
 
-    _ensure_utf8_stdio()
+    ensure_utf8_stdio()
     _logger.remove()
     _logger.configure(extra={"experiment_id": "unknown", "task_type": "unknown"})
     _logger.add(
