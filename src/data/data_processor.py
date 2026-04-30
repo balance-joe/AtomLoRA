@@ -1,5 +1,6 @@
 import json
 from tqdm import tqdm
+from src.data.io import normalize_label_col
 from src.utils.logger import get_logger
 
 
@@ -16,13 +17,10 @@ def load_dataset(config, path, tokenizer):
 
     data_config = config["data"]
     text_col = data_config["text_col"]
-    label_col_map = data_config["label_col"]
     label_mapping = data_config["label_mapping"]
-
-    # single_cls 场景下 label_col 是字符串，统一转为 {任务名: 字段名} 的字典
-    if isinstance(label_col_map, str):
-        task_name = next(iter(label_mapping.keys()))
-        label_col_map = {task_name: label_col_map}
+    label_col_map, _ = normalize_label_col(
+        data_config["label_col"], config["task_type"], label_mapping,
+    )
 
     # 反转映射：{0: "非误报"} → {"非误报": 0}，方便从原始标签查 ID
     reversed_label_mapping = {}

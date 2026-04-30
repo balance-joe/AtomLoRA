@@ -3,19 +3,19 @@ import torch
 from typing import Dict, Any, Optional
 from tqdm import tqdm
 
+from src.data.io import normalize_label_col
+
 
 def resolve_task_names(config):
     """从配置中解析任务名称和 single_cls 的标签键。"""
+    data = config["data"]
+    label_col_map, task_names = normalize_label_col(
+        data["label_col"], config["task_type"], data.get("label_mapping"),
+    )
     if config["task_type"] == "single_cls":
-        task_names = ["default"]
-        label_col_config = config["data"]["label_col"]
-        single_task_key = next(iter(label_col_config.keys())) if isinstance(label_col_config, dict) else label_col_config
-        return task_names, single_task_key
-    else:
-        label_col_config = config["data"]["label_col"]
-        if not isinstance(label_col_config, dict):
-            raise ValueError("multi_cls 任务要求 data.label_col 为字典")
-        return list(label_col_config.keys()), None
+        single_task_key = next(iter(label_col_map.keys()))
+        return ["default"], single_task_key
+    return task_names, None
 
 
 def run_evaluation(model, dataloader, config, metric_manager, device,

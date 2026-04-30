@@ -6,7 +6,7 @@ import json
 import random
 from collections import Counter
 
-from src.data.io import read_jsonl, write_jsonl
+from src.data.io import read_jsonl, write_jsonl, normalize_label_col
 from src.utils.logger import get_logger
 
 logger = get_logger()
@@ -40,10 +40,7 @@ def split_data(
     _validate_fields(records, text_col, label_col)
 
     # label_col 统一转为字典，便于后续生成配置
-    if isinstance(label_col, str):
-        label_col_map = {"default": label_col}
-    else:
-        label_col_map = label_col
+    label_col_map, _ = normalize_label_col(label_col, "single_cls")
 
     # 执行切分
     if stratify:

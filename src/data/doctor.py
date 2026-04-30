@@ -5,7 +5,7 @@ import os
 import json
 from collections import Counter
 
-from src.data.io import read_jsonl
+from src.data.io import read_jsonl, normalize_label_col
 from src.utils.logger import get_logger
 
 logger = get_logger()
@@ -23,16 +23,11 @@ def run_doctor(config: dict, low_count_threshold: int = 10) -> dict:
     """对 train/dev/test 数据集进行质量诊断，返回包含各级别问题的报告"""
     data_cfg = config["data"]
     text_col = data_cfg["text_col"]
-    label_col = data_cfg["label_col"]
     label_mapping = data_cfg.get("label_mapping", {})
     label_subset = data_cfg.get("label_subset", {})
-
-    # single_cls 场景下 label_col 是字符串，统一转为字典
-    if isinstance(label_col, str):
-        task_name = next(iter(label_mapping.keys())) if label_mapping else "default"
-        label_col_map = {task_name: label_col}
-    else:
-        label_col_map = label_col
+    label_col_map, _ = normalize_label_col(
+        data_cfg["label_col"], config.get("task_type", "single_cls"), label_mapping,
+    )
 
     # 构建已知标签集合，用于后续检查未知标签
     data_label_keys: dict[str, set] = {}

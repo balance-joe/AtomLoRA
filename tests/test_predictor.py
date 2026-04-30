@@ -91,6 +91,7 @@ class PredictorTests(unittest.TestCase):
             "data": {
                 "max_len": 16,
                 "text_col": "text",
+                "label_col": "label",
                 "label_mapping": {"default": {"0": "正确", "1": "错误"}},
             },
             "model": {
