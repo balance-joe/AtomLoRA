@@ -150,6 +150,11 @@ class Trainer:
         monitor_metric = early_stopping.get("metric", "main_score")
         epochs_without_improvement = 0
 
+        effective_batch_size = self.config["train"]["batch_size"] * grad_accum
+        self.logger.info(
+            f"批次配置: per_step={self.config['train']['batch_size']} × "
+            f"grad_accum={grad_accum} = effective={effective_batch_size}"
+        )
         self.logger.info("开始训练...")
 
         for epoch in range(1, epochs + 1):

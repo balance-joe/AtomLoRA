@@ -52,6 +52,49 @@ def normalize_label_col(label_col, task_type: str, label_mapping: dict = None):
         return label_col, list(label_col.keys())
 
 
+def build_reversed_mapping(label_mapping: dict) -> dict:
+    """构建反向标签映射: {task_name: {label_str: int_id}}
+
+    与 data_processor / predictor 中手写的反转逻辑等价，统一在此维护。
+    """
+    reversed_map = {}
+    for task_name, mapping in label_mapping.items():
+        reversed_map[task_name] = {v: int(k) for k, v in mapping.items()}
+    return reversed_map
+
+
+def resolve_label_id(reversed_mapping: dict, task_name: str, raw_value) -> int:
+    """将原始标签值（str / int / float）统一解析为整数 ID。
+
+    查找优先级：精确匹配 → 字符串转换匹配 → 整数兜底。
+    """
+    if task_name not in reversed_mapping:
+        raise KeyError(f"未知任务: {task_name}")
+
+    lookup_key = str(raw_value) if raw_value is not None else None
+    mapping = reversed_mapping[task_name]
+
+    if raw_value in mapping:
+        return mapping[raw_value]
+    if lookup_key is not None and lookup_key in mapping:
+        return mapping[lookup_key]
+    if isinstance(raw_value, (int, float)):
+        return int(raw_value)
+    raise KeyError(f"标签 '{raw_value}' 不在任务 '{task_name}' 的映射中")
+
+
+def resolve_label_name(label_mapping: dict, task_name: str, label_id: int) -> str:
+    """将整数 ID 解析为标签名称，兼容 str / int 键。
+
+    predictor 中 label_map.get(str(idx), label_map.get(idx, ...)) 的统一替代。
+    """
+    if task_name not in label_mapping:
+        raise KeyError(f"未知任务: {task_name}")
+
+    mapping = label_mapping[task_name]
+    return mapping.get(str(label_id), mapping.get(label_id, str(label_id)))
+
+
 def write_jsonl(records: list[dict], path: str) -> None:
     """将记录列表写入 JSONL 文件"""
     with open(path, "w", encoding="utf-8") as f:

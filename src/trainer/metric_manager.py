@@ -13,6 +13,7 @@ class MetricManager:
     def __init__(self, config):
         self.task_type = config["task_type"]
         self.config = config
+        self.f1_average = config.get("train", {}).get("f1_average", "macro")
 
     def validate_inputs(self, all_logits, all_labels):
         """校验 logits/labels 的 shape、值域和任务名是否对齐，不通过则抛异常"""
@@ -64,7 +65,7 @@ class MetricManager:
             labels = all_labels["default"].numpy()
             preds = np.argmax(logits.numpy(), axis=1)
 
-            f1 = f1_score(labels, preds, average='macro')
+            f1 = f1_score(labels, preds, average=self.f1_average)
             metrics["acc"] = accuracy_score(labels, preds)
             metrics["f1"] = f1
             metrics["main_score"] = f1
@@ -77,7 +78,7 @@ class MetricManager:
             labels = all_labels[task_name].numpy()
             preds = np.argmax(logits.numpy(), axis=1)
 
-            score = f1_score(labels, preds, average='macro')
+            score = f1_score(labels, preds, average=self.f1_average)
             metrics[f"{task_name}_f1"] = score
             metrics[f"{task_name}_acc"] = accuracy_score(labels, preds)
             scores_for_avg.append(score)
