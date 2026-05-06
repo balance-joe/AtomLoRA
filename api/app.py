@@ -161,3 +161,13 @@ async def unload_models(request: Request, _: None = Depends(verify_api_key)):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(executor, model_manager.unload_all)
     return success(msg="所有模型已卸载")
+
+
+@app.get("/models")
+def list_models():
+    """查询已加载的模型列表和容量信息"""
+    return success(data={
+        "loaded": list(model_manager.models.keys()),
+        "count": len(model_manager.models),
+        "max_models": model_manager.max_models,
+    })

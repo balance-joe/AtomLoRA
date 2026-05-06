@@ -6,6 +6,7 @@ from tqdm import tqdm
 from peft import PeftModel
 from transformers import AutoModel
 
+from src.data.io import resolve_label_name
 from src.utils.logger import get_logger
 from src.utils.device import resolve_device
 from src.model.model_factory import TaskTextClassifier, load_tokenizer, _resolve_model_path
@@ -255,8 +256,7 @@ class TextAuditPredictor:
         pred_idx = torch.argmax(probs, dim=-1).cpu().item()
         confidence = probs[0][pred_idx].cpu().item()
 
-        label_map = self.label_map["default"]
-        pred_label = label_map.get(str(pred_idx), label_map.get(pred_idx, str(pred_idx)))
+        pred_label = resolve_label_name(self.label_map, "default", pred_idx)
 
         result = {
             "text": data_sample.get(self.config["data"]["text_col"], ""),
@@ -266,7 +266,7 @@ class TextAuditPredictor:
             "probabilities": {},
         }
         for idx, prob in enumerate(probs[0].cpu().numpy()):
-            label = label_map.get(str(idx), label_map.get(idx, str(idx)))
+            label = resolve_label_name(self.label_map, "default", idx)
             result["probabilities"][label] = round(float(prob), 4)
             if idx >= 9:
                 break
@@ -291,8 +291,7 @@ class TextAuditPredictor:
             pred_idx = torch.argmax(probs, dim=-1).cpu().item()
             confidence = probs[0][pred_idx].cpu().item()
 
-            task_label_map = self.label_map[task_name]
-            pred_label = task_label_map.get(str(pred_idx), task_label_map.get(pred_idx, str(pred_idx)))
+            pred_label = resolve_label_name(self.label_map, task_name, pred_idx)
 
             task_result = {
                 "prediction": pred_label,
@@ -301,7 +300,7 @@ class TextAuditPredictor:
                 "probabilities": {},
             }
             for idx, prob in enumerate(probs[0].cpu().numpy()):
-                label = task_label_map.get(str(idx), task_label_map.get(idx, str(idx)))
+                label = resolve_label_name(self.label_map, task_name, idx)
                 task_result["probabilities"][label] = round(float(prob), 4)
                 if idx >= 9:
                     break

@@ -1,6 +1,6 @@
 import json
 from tqdm import tqdm
-from src.data.io import normalize_label_col
+from src.data.io import normalize_label_col, build_reversed_mapping, resolve_label_id
 from src.utils.logger import get_logger
 
 
@@ -23,9 +23,7 @@ def load_dataset(config, path, tokenizer):
     )
 
     # 反转映射：{0: "非误报"} → {"非误报": 0}，方便从原始标签查 ID
-    reversed_label_mapping = {}
-    for task_name, mapping in label_mapping.items():
-        reversed_label_mapping[task_name] = {v: int(k) for k, v in mapping.items()}
+    reversed_label_mapping = build_reversed_mapping(label_mapping)
 
     logger.info(f"加载数据集：{path} | 文本字段：{text_col} | 任务标签字段：{list(label_col_map.keys())}")
 
@@ -62,27 +60,14 @@ def load_dataset(config, path, tokenizer):
             valid_label = True
             for task_name, field_name in label_col_map.items():
                 raw_label = data.get(field_name)
-
-                # 原始标签可能是 int 或 str，统一转 str 用于映射查找
-                lookup_key = str(raw_label) if raw_label is not None else None
-
-                if lookup_key is None:
+                if raw_label is None:
                     logger.warning(f"第{line_idx+1}行任务[{task_name}]标签字段[{field_name}]缺失，跳过样本")
                     valid_label = False
                     break
-
                 try:
-                    # 优先精确匹配，再尝试字符串转换匹配，最后兜底整数标签
-                    if raw_label in reversed_label_mapping.get(task_name, {}):
-                        label_id = reversed_label_mapping[task_name][raw_label]
-                    elif lookup_key in reversed_label_mapping.get(task_name, {}):
-                        label_id = reversed_label_mapping[task_name][lookup_key]
-                    elif isinstance(raw_label, (int, float)):
-                        label_id = int(raw_label)
-                    else:
-                        raise KeyError(f"标签 '{raw_label}' 不在任务 '{task_name}' 的映射中")
-                    labels[task_name] = int(label_id)
-                except KeyError:
+                    labels[task_name] = resolve_label_id(reversed_label_mapping, task_name, raw_label)
+                except KeyError as e:
+                    logger.warning(f"第{line_idx+1}行: {e}")
                     valid_label = False
                     break
 
