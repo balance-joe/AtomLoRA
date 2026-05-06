@@ -107,6 +107,7 @@ bash install.sh cu121        # CUDA 12.1（CPU 用 bash install.sh cpu）
 
 ```bash
 # 2. 训练 demo 模型（首次运行自动下载 BERT）
+# CLI 命令使用配置文件路径
 atomlora train --config configs/demo.yaml
 
 # 3. 评估
@@ -118,6 +119,54 @@ atomlora predict --config configs/demo.yaml --text "逸夫楼停电了谁管管"
 # 5. 启动 API 服务
 atomlora serve --config configs/demo.yaml --port 8000
 ```
+
+API 请求使用 `exp_id` 作为 `model_name`。`configs/demo.yaml` 中的 `exp_id` 是 `demo_single_cls`，所以请求示例是：
+
+```bash
+curl -X POST http://127.0.0.1:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_name": "demo_single_cls",
+    "sample": {
+      "content": "逸夫楼停电了谁管管"
+    }
+  }'
+```
+
+### 后台启动与日志
+
+服务器上可以用 `nohup` 后台启动，并把服务输出写入 `logs/`：
+
+```bash
+mkdir -p logs
+
+nohup atomlora serve \
+  --config configs/macbert_yq_class_0.2.yaml \
+  --host 0.0.0.0 \
+  --port 7860 \
+  --workers 4 \
+  > logs/atomlora_7860.log 2>&1 &
+```
+
+查看是否启动：
+
+```bash
+ps -ef | grep "atomlora serve" | grep -v grep
+```
+
+查看日志：
+
+```bash
+tail -f logs/atomlora_7860.log
+```
+
+停止服务：
+
+```bash
+pkill -f "atomlora serve.*7860"
+```
+
+> 多 worker 会让每个进程各加载一份模型。GPU 推理时先从 `--workers 1` 开始，确认显存充足后再增加。
 
 训练产物保存在 `outputs/{exp_id}/` 目录：
 
@@ -444,7 +493,38 @@ optimizer:
 ## 配置系统
 
 AtomLoRA 使用 YAML 配置文件驱动所有行为。配置支持继承，子配置覆盖父配置的同名字段。
-训练完成后，`eval / predict / serve` 默认优先读取 `outputs/{exp_id}/config.yaml` 作为模型语义真相，而不是盲信当前外部配置文件。
+训练、评估、命令行预测和服务启动仍通过 `--config` 指定配置文件；API 请求中的模型标识统一使用配置里的 `exp_id`，不要使用配置文件名。
+
+### API 与运行期加载规则
+
+当前运行期约定如下：
+
+- `atomlora serve --config <yaml>`：用配置文件启动服务，并在启动时加载该配置中的 `exp_id` 模型。
+- `/load`：请求体只接受 `model_name`，且 `model_name` 必须等于配置中的 `exp_id`。
+- `/predict`：请求体只接受 `model_name` 和 `sample`；如果模型尚未加载，会先按 `model_name` 自动加载，再执行预测。
+- API 自动加载模型时，先尝试 `outputs/{exp_id}/config.yaml`；如果不存在，则扫描 `configs/**/*.yaml` / `*.yml`，查找 `exp_id` 等于 `model_name` 的配置文件。
+- 如果 `configs/` 下有多个配置文件使用同一个 `exp_id`，API 会拒绝自动加载并列出冲突文件；请保持 `exp_id` 全局唯一。
+- `model_name` 不是配置文件名。例如 `configs/ernie_wubao_2.0.yaml` 的 `exp_id` 是 `ernie_wubao_task_2.0`，API 应传 `ernie_wubao_task_2.0`。
+
+示例：
+
+```json
+{
+  "model_name": "ernie_wubao_task_2.0",
+  "sample": {
+    "content": "为什么南阳医专的就业补贴都发了我们学校还没有信儿"
+  }
+}
+```
+
+本次相关代码职责：
+
+| 文件 | 当前职责 |
+|------|----------|
+| `api/app.py` | `/load` 和 `/predict` 都只接收 `model_name=exp_id`；`/predict` 会在未加载时调用按需加载。 |
+| `api/model_manager.py` | 以内存中的 `exp_id` 管理模型；按 `exp_id` 查找配置，优先 `outputs/{exp_id}/config.yaml`，否则扫描 `configs/`；校验配置内 `exp_id` 必须等于请求的 `model_name`。 |
+| `atomlora/cli.py` | `serve` 仍通过 `--config` 指定启动配置，支持 `--workers` 透传给 Uvicorn。 |
+| `evaluator.py` | 评估阶段使用解析后的配置，按 `outputs/{exp_id}/` 加载 tokenizer、adapter 和 classifier，不使用 API 的 `model_name`。 |
 
 ### 最小配置示例
 
@@ -507,7 +587,7 @@ data:
 - 配置驱动：训练、评估、预测、服务统一由 YAML 驱动，支持配置继承
 - 参数高效：默认围绕 LoRA 微调设计，适合中文分类场景的小数据快速迭代
 - 产物清晰：训练输出集中在 `outputs/{exp_id}/`，便于追踪 adapter、分类头、tokenizer 和指标
-- 部署可控：支持 API 服务、显式设备选择，以及 `outputs/{exp_id}/config.yaml` 作为运行期语义真相
+- 部署可控：支持 API 服务、显式设备选择，以及 API 按 `exp_id` 管理和按需加载模型
 
 ---
 

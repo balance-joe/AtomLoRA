@@ -67,7 +67,7 @@ def _friendly_error(e: Exception, config_path: str = None):
 def cmd_serve(args):
     """启动 FastAPI 推理服务"""
     import uvicorn
-    from src.config.parser import parse_config, resolve_runtime_config_path
+    from src.config.parser import parse_config, resolve_runtime_config_path, PROJECT_ROOT
     from src.utils.device import resolve_device
 
     config = parse_config(args.config, mode="serve")
@@ -75,8 +75,17 @@ def cmd_serve(args):
     if args.reload and device.type == "cuda":
         raise ValueError("GPU 推理服务不支持 --reload，请使用单进程模式启动。")
 
+    if PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, PROJECT_ROOT)
+
     os.environ["ATOMLORA_SERVE_CONFIG"] = resolve_runtime_config_path(args.config, mode="serve")
-    uvicorn.run("api.app:app", host=args.host, port=args.port, reload=args.reload)
+    uvicorn.run(
+        "api.app:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        workers=args.workers,
+    )
 
 
 def cmd_split(args):
@@ -221,6 +230,7 @@ def main():
     p_serve.add_argument("--config", required=True, help="YAML config path")
     p_serve.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     p_serve.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
+    p_serve.add_argument("--workers", type=int, default=1, help="Uvicorn worker processes (default: 1)")
     p_serve.add_argument("--reload", action="store_true", help="Enable auto-reload")
     p_serve.set_defaults(func=cmd_serve)
 

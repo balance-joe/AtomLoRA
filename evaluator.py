@@ -41,11 +41,27 @@ class Evaluator:
 
     def _load_tokenizer(self):
         """加载 Tokenizer"""
+        if not os.path.isdir(self.tokenizer_path) or not os.listdir(self.tokenizer_path):
+            raise FileNotFoundError(
+                f"[EVAL] Tokenizer 目录为空或不存在: {self.tokenizer_path}\n"
+                f"  请先完成训练: atomlora train --config <your_config.yaml>"
+            )
         self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
         self.logger.info("Tokenizer loaded for evaluation")
 
     def _load_model(self):
         """加载基座模型、LoRA 适配器和分类头"""
+        if not os.path.isdir(self.lora_path) or not os.listdir(self.lora_path):
+            raise FileNotFoundError(
+                f"[EVAL] LoRA 适配器目录为空或不存在: {self.lora_path}\n"
+                f"  请先完成训练: atomlora train --config <your_config.yaml>"
+            )
+        if not os.path.isfile(self.clf_path):
+            raise FileNotFoundError(
+                f"[EVAL] 分类头权重不存在: {self.clf_path}\n"
+                f"  请先完成训练: atomlora train --config <your_config.yaml>"
+            )
+
         model_arch = self.config["model"]["arch"]
         model_path = self.config["model"].get("path", model_arch)
         resolved_path = _resolve_model_path(model_path, self.logger)

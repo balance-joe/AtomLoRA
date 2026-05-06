@@ -160,6 +160,42 @@ class PredictorTests(unittest.TestCase):
         for prob in result["probabilities"].values():
             self.assertIsInstance(prob, float)
 
+    def _create_predictor_for_validation(self, tokenizer_size=100, embedding_size=100):
+        from src.predict.predictor import TextAuditPredictor
+
+        predictor = TextAuditPredictor.__new__(TextAuditPredictor)
+        predictor.task_type = "single_cls"
+        predictor.label_map = {"default": {"0": "正确", "1": "错误"}}
+        predictor.tokenizer = FakeTokenizer(vocab_size=tokenizer_size, max_len=16)
+        predictor.model = SimpleNamespace(
+            bert=TinyBackbone(hidden_size=32, vocab_size=embedding_size),
+            classifiers=nn.ModuleDict({
+                "default": nn.Sequential(
+                    nn.Dropout(0.1),
+                    nn.Linear(32, 16),
+                    nn.ReLU(),
+                    nn.Linear(16, 2),
+                )
+            }),
+        )
+        return predictor
+
+    def test_validate_allows_embedding_larger_than_tokenizer(self):
+        predictor = self._create_predictor_for_validation(
+            tokenizer_size=99,
+            embedding_size=100,
+        )
+        predictor._validate_loaded_artifacts()
+
+    def test_validate_rejects_embedding_smaller_than_tokenizer(self):
+        predictor = self._create_predictor_for_validation(
+            tokenizer_size=101,
+            embedding_size=100,
+        )
+        with self.assertRaises(RuntimeError) as ctx:
+            predictor._validate_loaded_artifacts()
+        self.assertIn("Tokenizer / embedding", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,7 +38,10 @@ class TextAuditPredictor:
         self.exp_dir = os.path.join("outputs", self.exp_id)
 
         if not os.path.isdir(self.exp_dir):
-            raise FileNotFoundError(f"实验目录不存在: {self.exp_dir}")
+            raise FileNotFoundError(
+                f"[PREDICT] 实验目录不存在: {self.exp_dir}\n"
+                f"  请先完成训练: atomlora train --config <your_config.yaml>"
+            )
 
         self._load_experiment_artifacts()
         self._initialize_model()
@@ -80,13 +83,14 @@ class TextAuditPredictor:
 
     def _load_tokenizer(self):
         tokenizer_path = resolve_tokenizer_path(self.exp_dir)
-        if os.path.exists(tokenizer_path):
+        if os.path.isdir(tokenizer_path) and os.listdir(tokenizer_path):
             from transformers import AutoTokenizer
-
             return AutoTokenizer.from_pretrained(tokenizer_path)
 
-        self.logger.warning("⚠️ 未找到训练好的Tokenizer，从配置加载")
-        return load_tokenizer(self.config)
+        raise FileNotFoundError(
+            f"[PREDICT] Tokenizer 目录为空或不存在: {tokenizer_path}\n"
+            f"  请先完成训练: atomlora train --config <your_config.yaml>"
+        )
 
     def _initialize_model(self):
         backbone = self._load_backbone_with_artifacts()
@@ -121,13 +125,17 @@ class TextAuditPredictor:
         if os.path.exists(adapter_bin_path) or os.path.exists(adapter_safetensors_path):
             return
         raise FileNotFoundError(
-            f"LoRA 适配器不存在: {self.adapter_path}\n"
-            "  期望存在 adapter_model.bin 或 adapter_model.safetensors"
+            f"[PREDICT] LoRA 适配器不存在: {self.adapter_path}\n"
+            f"  期望存在 adapter_model.bin 或 adapter_model.safetensors\n"
+            f"  请先完成训练: atomlora train --config <your_config.yaml>"
         )
 
     def _load_classifier_weights(self):
         if not os.path.exists(self.classifier_path):
-            raise FileNotFoundError(f"分类头权重文件不存在: {self.classifier_path}")
+            raise FileNotFoundError(
+                f"[PREDICT] 分类头权重文件不存在: {self.classifier_path}\n"
+                f"  请先完成训练: atomlora train --config <your_config.yaml>"
+            )
 
         try:
             clf_state = torch.load(self.classifier_path, map_location=self.device)
@@ -153,9 +161,9 @@ class TextAuditPredictor:
 
         embedding_size = self.model.bert.get_input_embeddings().num_embeddings
         tokenizer_size = len(self.tokenizer)
-        if embedding_size != tokenizer_size:
+        if embedding_size < tokenizer_size:
             raise RuntimeError(
-                f"Tokenizer / embedding 大小不一致: tokenizer={tokenizer_size} embedding={embedding_size}"
+                f"Tokenizer / embedding 大小不兼容: tokenizer={tokenizer_size} embedding={embedding_size}"
             )
 
     def predict(self, data_sample: Dict[str, Any]) -> Dict[str, Any]:

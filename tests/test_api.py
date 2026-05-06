@@ -64,6 +64,7 @@ class APIEndpointTests(unittest.TestCase):
         self.assertEqual(body["code"], 2000)
         self.assertIn("prediction", body["data"])
         self.assertIn("confidence", body["data"])
+        self.mock_mm.ensure_model_loaded.assert_called_once_with("test")
 
     def test_predict_missing_model_name(self):
         resp = self.client.post("/predict", json={"sample": {"text": "hello"}})
@@ -96,7 +97,7 @@ class APIEndpointTests(unittest.TestCase):
         self.assertIn("content", body["msg"])
 
     def test_predict_model_not_loaded(self):
-        self.mock_mm.get_text_col.side_effect = FileNotFoundError("模型未加载")
+        self.mock_mm.ensure_model_loaded.side_effect = FileNotFoundError("模型未加载")
         resp = self.client.post(
             "/predict",
             json={"model_name": "test", "sample": {"text": "hello"}},
@@ -124,11 +125,17 @@ class APIEndpointTests(unittest.TestCase):
 
     # ---- /load ----
 
-    def test_load_missing_config_path(self):
+    def test_load_missing_model_name(self):
         resp = self.client.post("/load", json={})
         body = resp.json()
         self.assertEqual(body["code"], 5000)
-        self.assertIn("config_path", body["msg"])
+        self.assertIn("model_name", body["msg"])
+
+    def test_load_valid_request(self):
+        resp = self.client.post("/load", json={"model_name": "test"})
+        body = resp.json()
+        self.assertEqual(body["code"], 2000)
+        self.mock_mm.load_model.assert_called_once_with("test")
 
 
 if __name__ == "__main__":

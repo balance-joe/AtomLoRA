@@ -1,15 +1,21 @@
 import os
 import gc
 from typing import Dict
+import yaml
 
-from src.config.parser import parse_config, resolve_saved_config_path, resolve_runtime_config_path
+from src.config.parser import (
+    CONFIG_ROOT,
+    parse_config,
+    resolve_saved_config_path,
+    resolve_runtime_config_path,
+)
 from src.predict.predictor import TextAuditPredictor
 from src.utils.logger import get_logger, init_logger
 
 logger = get_logger()
 
 # 同时加载的模型数量上限，防止 GPU 显存不足
-MAX_MODELS = int(os.environ.get("ATOMLORA_MAX_MODELS", "1"))
+MAX_MODELS = int(os.environ.get("ATOMLORA_MAX_MODELS", "3"))
 
 
 class ModelManager:
@@ -18,6 +24,49 @@ class ModelManager:
     def __init__(self, max_models: int = MAX_MODELS):
         self.models: Dict[str, TextAuditPredictor] = {}
         self.max_models = max_models
+
+    def _get_predictor(self, model_name: str) -> TextAuditPredictor:
+        if model_name not in self.models:
+            raise FileNotFoundError(
+                f"模型 '{model_name}' 未加载。请先通过 POST /load 或启动时指定配置加载模型。"
+            )
+        return self.models[model_name]
+
+    def ensure_model_loaded(self, model_name: str):
+        """按需加载模型；model_name 必须是 exp_id。"""
+        if model_name in self.models:
+            return
+        self.load_model(model_name)
+
+    def _find_config_by_exp_id(self, exp_id: str) -> str:
+        matches = []
+        for root, _, files in os.walk(CONFIG_ROOT):
+            for filename in files:
+                if not filename.endswith((".yaml", ".yml")):
+                    continue
+                candidate = os.path.join(root, filename)
+                try:
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        raw_config = yaml.safe_load(f)
+                except Exception:
+                    continue
+                if isinstance(raw_config, dict) and raw_config.get("exp_id") == exp_id:
+                    matches.append(candidate)
+
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            conflict_list = "\n".join(f"  - {path}" for path in matches)
+            raise ValueError(
+                f"configs 目录存在重复 exp_id='{exp_id}' 的配置文件:\n{conflict_list}"
+            )
+        raise FileNotFoundError(f"未在 configs 目录找到 exp_id='{exp_id}' 对应的配置文件")
+
+    def _resolve_config_for_exp_id(self, exp_id: str) -> str:
+        saved_config = resolve_saved_config_path(exp_id)
+        if os.path.exists(saved_config):
+            return saved_config
+        return self._find_config_by_exp_id(exp_id)
 
     def unload_all(self):
         """释放所有模型显存：先 close，再 del 触发引用计数回收，最后清空 CUDA 缓存"""
@@ -57,7 +106,7 @@ class ModelManager:
 
         # 未指定配置时从保存的实验目录查找
         if config_path is None:
-            config_path = resolve_saved_config_path(model_name)
+            config_path = self._resolve_config_for_exp_id(model_name)
         else:
             config_path = resolve_runtime_config_path(config_path, mode="serve")
 
@@ -66,34 +115,26 @@ class ModelManager:
         config = parse_config(config_path, mode="serve")
 
         exp_id = config["exp_id"]
-        logger = init_logger(exp_id, config["task_type"])
-        logger.info(f"加载模型: {model_name} (from {config_path})")
+        if exp_id != model_name:
+            raise ValueError(
+                f"model_name 必须是 exp_id: request={model_name} config_exp_id={exp_id}"
+            )
+        exp_logger = init_logger(exp_id, config["task_type"])
+        exp_logger.info(f"加载模型: {model_name} (from {config_path})")
 
         predictor = TextAuditPredictor(config=config)
         self.models[model_name] = predictor
 
     def predict(self, model_name: str, sample: dict) -> dict:
         """对单条样本进行预测，返回预测结果"""
-        if model_name not in self.models:
-            raise FileNotFoundError(
-                f"模型 '{model_name}' 未加载。请先通过 POST /load 或启动时指定配置加载模型。"
-            )
-        predictor = self.models[model_name]
+        predictor = self._get_predictor(model_name)
         result = predictor.predict(sample)
         return result
 
     def get_text_col(self, model_name: str) -> str:
         """获取模型配置中的文本字段名"""
-        if model_name not in self.models:
-            raise FileNotFoundError(
-                f"模型 '{model_name}' 未加载。请先通过 POST /load 或启动时指定配置加载模型。"
-            )
-        return self.models[model_name].config["data"]["text_col"]
+        return self._get_predictor(model_name).config["data"]["text_col"]
 
     def get_model_info(self, model_name: str) -> dict:
         """获取模型详细信息（任务类型、标签映射等）"""
-        if model_name not in self.models:
-            raise FileNotFoundError(
-                f"模型 '{model_name}' 未加载。请先通过 POST /load 或启动时指定配置加载模型。"
-            )
-        return self.models[model_name].get_model_info()
+        return self._get_predictor(model_name).get_model_info()

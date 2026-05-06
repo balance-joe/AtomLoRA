@@ -75,7 +75,7 @@ def index():
 
 @app.post("/load")
 async def load_model(request: Request, _: None = Depends(verify_api_key)):
-    """显式加载指定模型"""
+    """显式加载指定模型，model_name 必须是 exp_id"""
     await rate_limiter.check(request)
 
     try:
@@ -83,30 +83,27 @@ async def load_model(request: Request, _: None = Depends(verify_api_key)):
     except Exception:
         return error("请求体必须是合法的 JSON")
 
-    config_path = body.get("config_path")
-    if not config_path:
-        return error("config_path 必填")
+    model_name = body.get("model_name")
+    if not model_name:
+        return error("model_name 必填，且必须是 exp_id")
 
     try:
-        from src.config.parser import parse_config
-        config = parse_config(config_path, mode="serve")
-        model_name = config["exp_id"]
         async with gpu_semaphore:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 executor,
-                lambda: model_manager.load_model(model_name, config_path=config_path),
+                lambda: model_manager.load_model(model_name),
             )
         return success(msg=f"模型已加载: {model_name}")
     except FileNotFoundError as e:
-        return error(f"模型或配置文件不存在: {e}")
+        return error(f"模型不存在: {e}")
     except Exception as e:
         return error(f"{type(e).__name__}: {e}")
 
 
 @app.post("/predict")
 async def predict(request: Request, _: None = Depends(verify_api_key)):
-    """预测接口：接收模型名和样本，返回预测结果"""
+    """预测接口：接收 exp_id 和样本，未加载时自动按 exp_id 加载模型"""
     await rate_limiter.check(request)
 
     try:
@@ -124,12 +121,16 @@ async def predict(request: Request, _: None = Depends(verify_api_key)):
         return error("sample 必填且必须是对象")
 
     try:
-        text_col = model_manager.get_text_col(model_name)
-        content = sample.get(text_col)
-        if not content or not isinstance(content, str):
-            return error(f"sample.{text_col} 必填且必须是字符串")
         async with gpu_semaphore:
             loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                executor,
+                lambda: model_manager.ensure_model_loaded(model_name),
+            )
+            text_col = model_manager.get_text_col(model_name)
+            content = sample.get(text_col)
+            if not content or not isinstance(content, str):
+                return error(f"sample.{text_col} 必填且必须是字符串")
             result = await loop.run_in_executor(
                 executor,
                 lambda: model_manager.predict(model_name=model_name, sample=sample),
